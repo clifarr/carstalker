@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The CarStalker logo: the visible 72dp centre of the adaptive launcher icon,
+  car under a magnifier on the carbon backdrop. The launcher icon insets this
+  same drawable into its foreground, so the in-app logo and the app icon
+  cannot diverge.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="72dp"
+    android:height="72dp"
+    android:viewportWidth="72"
+    android:viewportHeight="72">
+    <!-- Carbon backdrop (clipped to a circle by the caller) -->
+    <path
+        android:pathData="M0,0h72v72h-72z"
+        android:fillColor="#0B0E12" />
+    <group
+        android:translateX="-18"
+        android:translateY="-18">
+        <!-- Lens glass, lifted from the background -->
+        <path
+                android:pathData="M49,45 m-20,0 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0"
+                android:fillColor="#10161D" />
+        <path
+                android:pathData="M49,45 m-24,0 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0"
+                android:fillColor="#1FC6FF3D" />
+        <path
+                android:pathData="M33.2,52.6 L33.2,47.2 Q33.2,45.4 34.9,45.0 L38.6,44.2 L42.1,38.2 Q43.0,36.7 44.8,36.7 L50.6,36.7 Q52.4,36.7 53.6,38.0 L58.9,43.4 L63.3,44.4 Q65.0,44.8 65.3,46.5 L65.6,52.6 Z"
+                android:fillColor="#EAF0F5" />
+        <path
+                android:pathData="M43.4,42.6 L46.2,38.6 L50.4,38.6 L50.4,42.6 Z"
+                android:fillColor="#0F151B" />
+        <path
+                android:pathData="M51.8,38.6 L53.3,38.6 L56.9,42.6 L51.8,42.6 Z"
+                android:fillColor="#0F151B" />
+        <path
+                android:pathData="M39.8,52.8 m-4.1,0 a4.1,4.1 0 1,0 8.2,0 a4.1,4.1 0 1,0 -8.2,0"
+                android:fillColor="#0B0E12" />
+        <path
+                android:pathData="M39.8,52.8 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0"
+                android:strokeColor="#C6FF3D"
+                android:strokeWidth="1.4"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M59.4,52.8 m-4.1,0 a4.1,4.1 0 1,0 8.2,0 a4.1,4.1 0 1,0 -8.2,0"
+                android:fillColor="#0B0E12" />
+        <path
+                android:pathData="M59.4,52.8 m-2.5,0 a2.5,2.5 0 1,0 5,0 a2.5,2.5 0 1,0 -5,0"
+                android:strokeColor="#C6FF3D"
+                android:strokeWidth="1.4"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M62.8,46.0 L65.2,46.3 L65.2,47.7 L62.8,47.3 Z"
+                android:fillColor="#C6FF3D" />
+        <path
+                android:pathData="M33.4,46.8 L34.9,47.0 L34.9,48.3 L33.4,48.1 Z"
+                android:fillColor="#FF6B4A" />
+        <path
+                android:pathData="M37.2,32.0 L42.6,32.0 L44.6,28.2 L47.0,36.0 L49.0,32.0 L60.8,32.0"
+                android:strokeColor="#4DD8FF"
+                android:strokeWidth="2.2"
+                android:strokeLineCap="round"
+                android:strokeLineJoin="round"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M49,45 m-20,0 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0"
+                android:strokeColor="#C6FF3D"
+                android:strokeWidth="4.6"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M34.6,37.6 A16.5,16.5 0 0,1 44.2,28.4"
+                android:strokeColor="#66EAF0F5"
+                android:strokeWidth="2.2"
+                android:strokeLineCap="round"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M63.2,59.2 L74.2,70.2"
+                android:strokeColor="#C6FF3D"
+                android:strokeWidth="7.2"
+                android:strokeLineCap="round"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M64.8,60.8 L72.4,68.4"
+                android:strokeColor="#8FBF1F"
+                android:strokeWidth="2.0"
+                android:strokeLineCap="round"
+                android:fillColor="@android:color/transparent" />
+        <path
+                android:pathData="M62.5,24.8 L63.4,27.6 L66.2,28.5 L63.4,29.4 L62.5,32.2 L61.6,29.4 L58.8,28.5 L61.6,27.6 Z"
+                android:fillColor="#EAF0F5" />
+    </group>
+</vector>

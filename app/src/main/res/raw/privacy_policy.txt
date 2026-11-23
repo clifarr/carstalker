@@ -1,0 +1,42 @@
+CarStalker Privacy Policy
+
+Effective date: 23 November 2026
+App: CarStalker (com.carstalker.app)
+Status: Beta
+
+CarStalker is an OBD-II diagnostic app for Android. This policy explains what the app does with your data.
+
+SUMMARY
+- CarStalker does not collect, transmit, sell or share your personal data.
+- There is no account, no analytics, no advertising and no cloud service.
+- Settings, vehicle identity, recordings and reports stay on your device until you choose to share them.
+
+DATA STORED ON YOUR DEVICE
+CarStalker stores the following in its private app storage:
+- app settings such as units, theme, polling interval and adapter defaults;
+- the last vehicle identity read from the car, including the VIN;
+- drive recordings (CSV) and diagnostic reports (PDF) you create;
+- custom PID definitions;
+- guided diagnostic results and saved baselines.
+This data is not uploaded anywhere by CarStalker.
+
+PERMISSIONS AND WHY THEY ARE NEEDED
+- Bluetooth: to find and connect to a Bluetooth OBD-II adapter.
+- Location (Android 11 and lower only): Android requires location permission for Bluetooth device discovery. CarStalker uses it only to find your adapter. It does not read, use or store your location.
+- USB: to connect to a USB OBD-II adapter.
+- Internet: to connect to a Wi-Fi OBD-II adapter on your local network. CarStalker does not contact a server.
+
+SHARING
+Recordings and reports are shared only when you choose Share or Print. The app you share to is selected by you. CarStalker does not share data on its own.
+
+RETENTION AND DELETION
+Data stays on your device until you delete it. You can delete recordings in the app or clear the app's storage in Android settings.
+
+CHILDREN
+CarStalker is not directed at children.
+
+CHANGES
+If this policy changes, the effective date above will be updated.
+
+CONTACT
+For privacy questions, use the developer email shown on the CarStalker Google Play listing or open an issue in the project repository.

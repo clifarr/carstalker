@@ -1,0 +1,256 @@
+package com.carstalker.app
+
+import android.Manifest
+import android.content.Intent
+import android.os.Build
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.Until
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import java.io.File
+
+/**
+ * End-to-end smoke test of the main flows on a real device.
+ * Run with: ./gradlew :app:connectedDebugAndroidTest
+ */
+@RunWith(AndroidJUnit4::class)
+class CarStalkerUiTest {
+
+    private lateinit var device: UiDevice
+
+    @Before
+    fun launchApp() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        device = UiDevice.getInstance(instrumentation)
+        val context = instrumentation.targetContext
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                instrumentation.uiAutomation.grantRuntimePermission(
+                    context.packageName,
+                    Manifest.permission.BLUETOOTH_SCAN,
+                )
+                instrumentation.uiAutomation.grantRuntimePermission(
+                    context.packageName,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                )
+            }
+        }
+        context.startActivity(
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        assertTrue("Connect screen did not appear", waitFor("CarStalker", 15_000))
+    }
+
+    @Test
+    fun mainFlows() {
+        screenshot("01-connect")
+
+        // Demo connection
+        click("Demo")
+        assertTrue("Demo pane did not appear", waitFor("Start demo"))
+        screenshot("02-demo")
+        click("Start demo")
+        assertTrue("Dashboard did not appear", waitFor("LIVE TELEMETRY", 20_000))
+        assertTrue("Live status missing", waitFor("Live", 15_000))
+        Thread.sleep(2_500)
+        screenshot("03-dashboard")
+
+        // PID detail sheet
+        click("RPM")
+        assertTrue("PID detail did not open", waitFor("Engine speed", 8_000))
+        screenshot("04-pid-detail")
+        click("Close")
+
+        // Diagnostics and clearing
+        click("Codes")
+        assertTrue("Codes screen did not appear", waitFor("DIAGNOSTICS"))
+        assertTrue("No DTCs reported by demo", waitFor("Check-engine light on", 15_000))
+        screenshot("05-codes")
+
+        click("Clear codes")
+        assertTrue("Clear confirmation missing", waitFor("Clear trouble codes?"))
+        clickLast("Clear codes")
+        assertTrue("Codes were not cleared", waitFor("No faults reported", 15_000))
+        screenshot("06-codes-cleared")
+
+        // Recording and playback
+        click("Dash")
+        assertTrue(waitFor("LIVE TELEMETRY"))
+        clickDesc("Start recording")
+        Thread.sleep(7_000)
+        clickDesc("Stop recording")
+        click("Recordings")
+        assertTrue("Recordings screen did not appear", waitFor("RECORDINGS"))
+        assertTrue("No recorded session found", waitForContains("samples", 10_000))
+        assertFalse("Recording banner still visible", device.hasObject(By.text("Recording now")))
+        screenshot("07-logs")
+
+        // Playback
+        val sessionRow = device.wait(Until.findObject(By.textContains("samples")), 10_000)
+        assertTrue("Recorded session row not found", sessionRow != null)
+        sessionRow!!.click()
+        assertTrue("Playback screen did not open", waitFor("RECORDING", 10_000))
+        assertTrue("Play control missing", device.wait(Until.hasObject(By.desc("Play")), 5_000))
+        clickDesc("Play")
+        val started = device.wait(Until.hasObject(By.desc("Pause")), 3_000) ||
+            // A very short clip can finish before the assertion; that still counts as playback.
+            device.hasObject(By.desc("Play"))
+        assertTrue("Playback did not start", started)
+        Thread.sleep(1_200)
+        if (device.hasObject(By.desc("Pause"))) clickDesc("Pause")
+        screenshot("07b-playback")
+        device.pressBack()
+        assertTrue("Back from playback failed", waitFor("Your recordings", 5_000))
+
+        // Settings, picker, custom PID and light theme
+        click("Settings")
+        assertTrue("Settings did not appear", waitFor("SETTINGS"))
+        screenshot("08-settings")
+
+        clickScrolling("Manage")
+        assertTrue("PID picker did not open", waitFor("Dashboard parameters"))
+        screenshot("09-pid-picker")
+        device.pressBack()
+        Thread.sleep(500)
+
+        assertTrue("Custom PID section not reachable", scrollTo("Add custom PID"))
+        device.waitForIdle(1_500)
+        var dialogOpened = false
+        repeat(3) {
+            if (!device.hasObject(By.text("Add custom PID"))) scrollTo("Add custom PID")
+            val button = device.wait(Until.findObject(By.text("Add custom PID")), 4_000)
+            if (button != null) {
+                button.click()
+                device.waitForIdle(800)
+                dialogOpened = waitFor("New custom PID", 4_000)
+            }
+            if (!dialogOpened) Thread.sleep(600)
+        }
+        assertTrue("Custom PID dialog did not open", dialogOpened)
+        screenshot("10-custom-pid")
+        device.pressBack()
+        Thread.sleep(500)
+
+        scrollToBeginning()
+        click("Light")
+        click("Dash")
+        assertTrue(waitFor("LIVE TELEMETRY"))
+        Thread.sleep(1_500)
+        screenshot("11-dashboard-light")
+        click("Settings")
+        scrollToBeginning()
+        click("Dark")
+        Thread.sleep(500)
+
+        // Connected screen: open dashboard, back navigation, then disconnect
+        click("Dash")
+        click("Live")
+        assertTrue("Connected screen did not open", waitFor("Adapter connected", 5_000))
+        assertTrue("Open dashboard action missing", waitFor("Open dashboard", 5_000))
+        screenshot("12-connected")
+        click("Open dashboard")
+        assertTrue("Open dashboard did not return to live data", waitFor("LIVE TELEMETRY", 10_000))
+
+        click("Live")
+        assertTrue(waitFor("Adapter connected", 5_000))
+        device.pressBack()
+        assertTrue("Back did not return to the dashboard", waitFor("LIVE TELEMETRY", 10_000))
+
+        click("Live")
+        assertTrue(waitFor("Adapter connected", 5_000))
+        click("Disconnect")
+        assertTrue("Disconnect did not restore the picker", waitFor("Connect an OBD-II adapter", 10_000))
+        click("Bluetooth")
+        assertTrue("Bluetooth pane did not open", waitFor("Bluetooth Classic", 5_000))
+        assertFalse("Classic discovery started automatically", device.hasObject(By.text("Discovering devices")))
+
+        click("Bluetooth LE")
+        assertFalse("BLE scan started automatically", device.hasObject(By.text("Scanning for adapters")))
+        click("Scan")
+        assertTrue("BLE scan did not start", waitFor("Scanning for adapters", 5_000))
+        assertTrue("Stop button missing while scanning", waitFor("Stop", 5_000))
+        click("Stop")
+
+        click("Bluetooth Classic")
+        assertTrue("Classic tab did not open", waitFor("PAIRED", 5_000).or(waitFor("No paired adapters", 2_000)))
+        screenshot("13-connect-bluetooth")
+    }
+
+    private fun click(text: String, timeout: Long = 10_000) {
+        val target = device.wait(Until.findObject(By.text(text)), timeout)
+            ?: error("UI element not found: $text")
+        target.click()
+        device.waitForIdle(1_000)
+    }
+
+    private fun clickLast(text: String, timeout: Long = 10_000) {
+        device.wait(Until.hasObject(By.text(text)), timeout)
+        val targets = device.findObjects(By.text(text))
+        assertTrue("No UI element found: $text", targets.isNotEmpty())
+        targets.maxByOrNull { it.visibleBounds.top }?.click()
+        device.waitForIdle(1_000)
+    }
+
+    private fun clickDesc(description: String, timeout: Long = 10_000) {
+        val target = device.wait(Until.findObject(By.desc(description)), timeout)
+            ?: error("UI element not found by description: $description")
+        target.click()
+        device.waitForIdle(1_000)
+    }
+
+    private fun waitFor(text: String, timeout: Long = 10_000): Boolean =
+        device.wait(Until.hasObject(By.text(text)), timeout)
+
+    private fun waitForContains(text: String, timeout: Long = 10_000): Boolean =
+        device.wait(Until.hasObject(By.textContains(text)), timeout)
+
+    private fun clickScrolling(text: String) {
+        if (!device.hasObject(By.text(text))) scrollTo(text)
+        click(text)
+    }
+
+    private fun scrollTo(text: String): Boolean {
+        if (device.hasObject(By.text(text))) return true
+        // Compose exposes no UiScrollable container here, so swipe slowly in small steps until the text appears.
+        repeat(12) {
+            device.swipe(
+                device.displayWidth / 2,
+                (device.displayHeight * 0.70).toInt(),
+                device.displayWidth / 2,
+                (device.displayHeight * 0.50).toInt(),
+                100,
+            )
+            device.waitForIdle(500)
+            Thread.sleep(150)
+            if (device.hasObject(By.text(text))) return true
+        }
+        return device.hasObject(By.text(text))
+    }
+
+    private fun scrollToBeginning() {
+        repeat(8) {
+            device.swipe(
+                device.displayWidth / 2,
+                (device.displayHeight * 0.30).toInt(),
+                device.displayWidth / 2,
+                (device.displayHeight * 0.70).toInt(),
+                100,
+            )
+            device.waitForIdle(300)
+        }
+        Thread.sleep(300)
+    }
+
+    private fun screenshot(name: String) {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = context.getExternalFilesDir("screenshots") ?: context.filesDir
+        directory.mkdirs()
+        device.takeScreenshot(File(directory, "$name.png"))
+    }
+}

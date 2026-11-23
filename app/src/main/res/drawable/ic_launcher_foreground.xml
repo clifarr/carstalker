@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive icon foreground. The system draws this layer at 1.5x the icon size
+  and shows its central two thirds, so inset the shared 72dp brand mark by one
+  sixth on each side. This keeps the launcher icon and the in-app logo on the
+  same artwork at any icon size.
+-->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/ic_brand_mark"
+    android:insetLeft="16.6667%"
+    android:insetTop="16.6667%"
+    android:insetRight="16.6667%"
+    android:insetBottom="16.6667%" />

@@ -1,0 +1,20 @@
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+*.jks
+!debug.keystore
+.kotlin/
+keystore.properties
+
+# Internal design pack and real-vehicle screenshots (may contain VIN/plate data)
+todo/
+docs/screenshots/15-real-vehicle*.png
