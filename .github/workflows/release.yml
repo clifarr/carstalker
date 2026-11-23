@@ -71,6 +71,7 @@ jobs:
             dist/carstalker-*.apk
             dist/SHA256SUMS
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-beta') }}
 
       - name: Upload mapping
         uses: actions/upload-artifact@v4

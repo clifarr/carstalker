@@ -10,7 +10,7 @@ CarStalker is distributed as a signed APK from GitHub Releases. It is not on Goo
 
 ## Download
 
-1. Open the latest release: <https://github.com/clifarr/carstalker/releases/latest>.
+1. Open the releases page: <https://github.com/clifarr/carstalker/releases> and pick the newest beta.
 2. Download `carstalker-vX.Y.Z.apk`.
 3. Download `SHA256SUMS` and verify the APK (recommended):
    - macOS/Linux: `shasum -a 256 carstalker-vX.Y.Z.apk`

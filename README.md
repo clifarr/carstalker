@@ -20,7 +20,7 @@ Store copy, beta notes and the Play Console answers live in [docs/store-listing.
 
 The beta is distributed as a signed APK from [GitHub Releases](https://github.com/clifarr/carstalker/releases). The app is not on Google Play yet.
 
-- [Latest release](https://github.com/clifarr/carstalker/releases/latest)
+- [Releases](https://github.com/clifarr/carstalker/releases)
 - Verify the SHA-256 checksum published with each release.
 - Android 8.0+ (API 26). No account or adapter is needed to try demo mode.
 - For automatic updates, add the repository to [Obtainium](https://github.com/ImranR98/Obtainium). An IzzyOnDroid listing may follow.

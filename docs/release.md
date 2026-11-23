@@ -33,6 +33,8 @@ Never commit the keystore or `keystore.properties`. The workflow writes `keystor
 
 ## Release
 
+> The first release can be created manually with `gh release create` before the signing secrets are configured. Subsequent releases use the workflow below.
+
 1. Tag and push:
 
    ```bash
