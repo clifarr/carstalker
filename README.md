@@ -4,9 +4,37 @@
   <img src="docs/icon.png" width="132" alt="CarStalker icon — a car under a magnifying glass">
 </p>
 
-**Your car, decoded.** A free OBD-II app for Android — live engine data, diagnostics and drive logging with a UI built for people who actually like cars.
+**Your car, decoded.** A free OBD-II app for Android that goes beyond a live dashboard — assisted diagnostics that use live data and the ECU's own self-tests to rank likely causes, show the evidence and say what it cannot prove.
 
-No accounts. No ads. No subscriptions. No in-app purchases.
+No accounts. No ads. No subscriptions. No in-app purchases. Under 2 MB installed.
+
+## Not just another OBD-II dashboard
+
+There are plenty of apps that show RPM and clear codes. CarStalker starts there and adds the part that is usually missing: **assisted diagnostics**.
+
+- Every guide declares the signals it needs, the stages it captures, the safety stops and its limitations.
+- A capability resolver checks the car's supported PIDs and engine profile before offering a test. Missing signals produce an explicit *Limited test* or *Vehicle unsupported* state instead of a useless result.
+- The result lists observations, candidate causes with evidence for and against, competing explanations, a confidence category (not a fabricated probability) and one next check.
+- Tests stop for a flashing MIL, misfire codes, overheating or voltage limits.
+
+The app is deliberately honest about uncertainty: a P0420 plus a matching downstream trace is supporting evidence, not a parts order.
+
+### Small by design
+
+The release APK is about **1.9 MB** and the installed app is **under 2 MB** — less than 10 MB including app data. Comparable OBD apps routinely ship at tens or hundreds of megabytes because of ads, analytics, crash SDKs, bundled media and cross-platform runtimes. CarStalker has none of those: Kotlin, Jetpack Compose and a pure Kotlin protocol engine, no image assets beyond the icon, no telemetry.
+
+Small also means fast to install, light on storage, and usable on an old phone left in the glovebox.
+
+### Standing on public work
+
+CarStalker does not invent a new diagnostic science. It compiles and curates **publicly available, freely licensed information** into one complete, offline tool:
+
+- generic OBD-II behaviour from SAE J1979 / ISO 15031-5 and ISO 15765-2;
+- the CC0 generic DTC catalogue from OBDex (9,500+ SAE J2012 codes);
+- public technical explanations and independent technician guidance for the guided rules, with thresholds and wording written for this project;
+- public VIN/WMI prefixes for vehicle labels.
+
+Where something is a heuristic, the app says so. Where a source is licensed, [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) names it. No OEM service publication, paid database or proprietary app text is copied.
 
 ## Release status
 
@@ -34,20 +62,33 @@ CarStalker does not collect, transmit, sell or share personal data. Settings, ve
 
 ## Screens
 
+| Guided diagnostics | Guided test in progress |
+| --- | --- |
+| ![Guided guide catalogue with vehicle profile, current codes and a Suggested guide](docs/screenshots/16-diagnose.png) | ![Guided test capturing live data at warm idle](docs/screenshots/17-guided-capture.png) |
+
+| Assisted result with evidence | Trouble codes |
+| --- | --- |
+| ![Guided result showing findings, competing explanations and the next check](docs/screenshots/18-guided-result.png) | ![Trouble codes and readiness monitors](docs/screenshots/05-codes.png) |
+
 | Connect | Dashboard |
 | --- | --- |
 | ![Connect screen](docs/screenshots/01-connect.png) | ![Live dashboard](docs/screenshots/03-dashboard.png) |
 
-| Diagnostics | Recordings |
+| Recordings | Playback |
 | --- | --- |
-| ![Trouble codes and readiness monitors](docs/screenshots/05-codes.png) | ![Recorded sessions](docs/screenshots/08-logs.png) |
+| ![Recorded sessions](docs/screenshots/08-logs.png) | ![Recording playback with chart and scrub timeline](docs/screenshots/09-playback.png) |
 
-| Playback | Custom PID editor |
+| Custom PID editor | Settings |
 | --- | --- |
-| ![Recording playback with chart and scrub timeline](docs/screenshots/09-playback.png) | ![Custom PID formula editor](docs/screenshots/11-custom-pid.png) |
+| ![Custom PID formula editor](docs/screenshots/11-custom-pid.png) | ![App preferences](docs/screenshots/09-settings.png) |
+
+The guided screenshots are from **demo mode**: a simulated 2013 BRZ with a lean-trim scenario. No hardware, account or cloud service is involved.
 
 ## What it does
 
+- **Guided diagnostics platform** — reusable, vehicle-aware tests with a capability resolver, settling/capture state machine, per-stage sampling, evidence-backed findings and an exportable result. 21 guides are registered across four phases; all are startable in at least a documented limited mode.
+- **Deterministic, not a chatbot** — every rule is in the repository and runs offline. No AI service, no account, no cloud, no hallucinated parts list.
+- **Safety rails** — tests stop for a flashing MIL, misfire codes, overheating or voltage limits; the catalyst wizard refuses to condemn a converter when engine health or an exhaust leak could explain the code, and it warns against O2 spacers or converter deletes.
 - **Live telemetry** — canvas gauges for RPM and speed, plus sparkline tiles for load, coolant, intake temperature, MAF, throttle, fuel trims, fuel level and more. The dashboard picks the ten most useful parameters the connected car actually reports, and the parameter picker groups everything by category (engine, drivetrain, fuel, temperature, electrical, emissions).
 - **Battery voltage from the adapter** — read with `ATRV` every cycle and shown as its own parameter (`Battery`, no OBD PID), so it works on cars whose ECU does not report PID 42. Real PID 42 (`Control module voltage`) is still available in the parameter picker but is not picked automatically.
 - **Diagnostics** — read stored, pending and permanent trouble codes with human-readable descriptions, clear codes behind a confirmation, and see MIL status.
@@ -56,10 +97,7 @@ CarStalker does not collect, transmit, sell or share personal data. Settings, ve
 - **Mode 06 self-tests** — read on-board monitor test results (catalyst, O2, EVAP, misfire) with the ECU's own minimum and maximum limits, pass/fail state and margin to the nearest limit.
 - **DTC knowledge** — the bundled CC0 generic database covers 9,500+ SAE J2012 codes, and common codes include clean-room likely causes and next checks.
 - **PDF reports** — preview a shop-branded diagnostic report in-app with pinch-to-zoom, then share or print it. The report carries the CarStalker mark in the header, VIN, modules, codes, freeze frames, readiness monitors and Mode 06 results.
-- **Adapter health** — see the adapter identifier, protocol and description, get a warning for the common "ELM327 v1.5" clone, and measure round-trip requests per second.
-- **Guided diagnostics platform** — reusable, vehicle-aware tests with a capability resolver, settling/capture state machine, per-stage sampling, evidence-backed findings and an exportable result. Phase 1 ships the catalyst wizard plus lean mixture, thermostat vs ECT, charging and MAP plausibility.
-- **Deterministic, not a chatbot** — every rule is in the repository and runs offline. No AI service, no account, no cloud, no hallucinated parts list.
-- **Safety rails** — tests stop for a flashing MIL, misfire codes, overheating or voltage limits; the catalyst wizard refuses to condemn a converter when engine health or an exhaust leak could explain the code, and it warns against O2 spacers or converter deletes.
+- **Adapter health** — while connected, the Connect screen shows the adapter identifier, protocol and description, warns about the common "ELM327 v1.5" clone, and measures round-trip requests per second.
 - **Readiness monitors** — misfire, fuel system, catalyst, EVAP and friends, with Ready / Not ready / N/A states for emissions checks.
 - **Vehicle identity** — VIN, calibration ID, CVN and ECU name via OBD mode 09, plus a heuristic model year and manufacturer from the public VIN/WMI prefixes.
 - **Drive recordings** — every sample is recorded to wide-format CSV (one row per tick, one column per parameter) with a metadata preamble, then share or analyse it anywhere. Legacy long-format recordings still play back.
@@ -72,6 +110,8 @@ CarStalker does not collect, transmit, sell or share personal data. Settings, ve
 The guided platform answers a practical question: **which cause is most plausible, what else could explain it, and which check would distinguish them?** Each guide declares its required signals, stages, settling rules, safety stops and limitations. A capability resolver checks the car's supported PIDs and engine profile before offering a Start action; missing signals produce an explicit `Limited test` or `Vehicle unsupported` state instead of a useless test.
 
 The engine is a pure Kotlin state machine (`waiting → settling → capturing`, with pause, safety-stop and disconnect paths). It samples only the active stage's PIDs, timestamps every sample, computes effective rates and gaps, and discards mixed samples when conditions are lost. The result lists observations, candidate causes with evidence for/against, competing explanations, a confidence category (not a fabricated probability) and one next check. Results can be saved to the existing recordings store or included in the PDF report.
+
+The [screenshots above](#screens) are a real run of the lean-mixture guide in demo mode: the simulated car reports +48 % combined fuel trim at warm idle that falls to +12 % at 2,500 rpm. CarStalker reports *"Consistent with unmetered air"* as **supportive, not conclusive**, lists five other explanations, and recommends a smoke test — it does not order a part.
 
 See [docs/guided-diagnostics.md](docs/guided-diagnostics.md) for the architecture and for adding a definition and its interpreter.
 
@@ -134,14 +174,16 @@ The Phase 1 lean-mixture, thermostat, charging and MAP guides use the shared eng
 |---|---|
 | **Bluetooth Classic** | ELM327 dongles using RFCOMM/SPP (`00001101-…`). This is what most cheap "OBDII" dongles are. Pair the dongle in Android settings, then pick it in the app — paired adapters are listed instantly, no scan needed. |
 | **Bluetooth LE** | ELM327 BLE adapters. Prefers the FFE0/FFE1 serial service and falls back to the first writable/notifiable characteristic. |
-| **USB** | ELM327 USB cables via OTG. FTDI, CH340, CP210x, PL2303 and CDC-ACM chipsets (through [usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android)). |
-| **Wi-Fi** | ELM327 Wi-Fi adapters over TCP, default port 35000. |
+| **USB** | ELM327 USB cables via OTG. FTDI, CH340, CP210x, PL2303 and CDC-ACM chipsets (through [usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android)). Serial speed (baud rate) is chosen in the USB pane. |
+| **Wi-Fi** | ELM327 Wi-Fi adapters over TCP, default port 35000. Host and port are edited in the Wi-Fi pane. |
 
 Bluetooth lists only compatible adapters: devices advertising a known serial service, or whose names match a known dongle family. There is no "show all devices" option, so you can't accidentally pick your neighbour's car.
 
 > **"My dongle is paired but the app can't see it."** Almost always a Classic/SPP dongle. Open the Bluetooth tab, select **Bluetooth Classic**, and it will appear under **Paired**. Bluetooth LE and Classic are separate radio modes, so a Classic dongle never shows up in an LE scan.
 
-The handshake resets the adapter, turns off echo and linefeeds, detects the protocol with a real `0100` exchange, then **pins** it (`ATSP<n>`) so reconnects skip the search. CAN buses also get auto formatting, flow control, headers on (so responses can be attributed to an ECU) and (for 29-bit) `ATAR`; ISO/J1850 buses keep headers off and get a longer response window. Responses are parsed from plain, header-prefixed and ELM `n:` multi-frame formats.
+The response window is 400 ms (`ATST 64`). Bluetooth Classic alone costs 100-200 ms per exchange on many clones, so a tighter window makes every read fail intermittently.
+
+The handshake resets the adapter, turns off echo and linefeeds, detects the protocol with a real `0100` exchange, then **pins** it (`ATSP<n>`) so reconnects skip the search. CAN buses also get auto formatting, flow control, headers on (so responses can be attributed to an ECU) and (for 29-bit) `ATAR`; ISO/J1850 buses keep headers off and get a longer response window. Responses are parsed from plain, header-prefixed and ELM `n:` multi-frame formats, including 29-bit CAN headers printed as four separate bytes (`18 DA F1 10 04 41 0C 0C 84`) and ISO-TP first/consecutive frame reassembly for multi-frame answers such as VIN.
 
 Latency is handled at three levels: stale bytes are discarded before every write, only parameters the ECU advertises are requested, and the [poll scheduler](core/src/main/kotlin/com/carstalker/core/obd/PollScheduler.kt) asks for fast-changing values more often than slow ones. Parameters that stop answering are dropped for the session.
 
@@ -254,12 +296,12 @@ app/    Android + Jetpack Compose UI
 
 ## Data and licenses
 
-CarStalker ships only data that can be redistributed:
+CarStalker does not claim to invent a new diagnostic method. It compiles and curates publicly available, freely licensed information into one tool, and ships only data that can be redistributed:
 
 - **Generic DTC descriptions** — the 9,500+ SAE J2012 generic codes come from [OBDex](https://github.com/foerbsnavi/obdex), dedicated to the public domain under **CC0 1.0**. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Protocol behaviour** — implemented from public standards and observed adapter behaviour (SAE J1979, ISO 15765-2, ISO 14229 service identifiers). No paid standard text or proprietary database is copied.
 - **No OEM databases** — manufacturer-specific DIDs, service functions and coding data are not bundled. Enhanced diagnostics will use clean-room, community-reviewed vehicle packs, with provenance recorded for every entry.
-- **Guided diagnostics** — the procedures are informed by public technical explanations and independent technician guidance (APEX Tech Nation, TroubleCodes.net, AA1Car, EngineerFix). The rules, thresholds and wording are CarStalker's own; no service-publication text is copied. Treat the thresholds as a starting point that still needs real-car validation. The Phase 1 guide definitions and analyzers live in [`core/guided`](core/src/main/kotlin/com/carstalker/core/guided).
+- **Guided diagnostics** — the procedures are informed by public technical explanations and independent technician guidance (APEX Tech Nation, TroubleCodes.net, AA1Car, EngineerFix). The rules, thresholds and wording are CarStalker's own; no service-publication text is copied. Treat the thresholds as a starting point that still needs real-car validation. The guide definitions and analyzers live in [`core/guided`](core/src/main/kotlin/com/carstalker/core/guided).
 - **No telemetry** — recordings and reports stay in app-private storage until you choose to share them.
 
 If you contribute vehicle data, only submit values you measured yourself or material you have the right to redistribute. Do not paste text from VCDS, FORScan, Car Scanner, BimmerCode, AlfaOBD, JScan or any paid service publication.

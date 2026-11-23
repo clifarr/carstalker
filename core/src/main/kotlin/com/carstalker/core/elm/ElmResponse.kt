@@ -48,6 +48,25 @@ data class ElmResponse(
  */
 object ElmResponseParser {
 
+    /** Format bytes that begin a three-byte ISO/J1850 header. */
+    private val ISO_HEADER_FORMATS = setOf(0x48, 0x68, 0x41, 0x61, 0x49)
+
+    /** Drops the ISO-TP length byte at [start] and returns exactly that many payload bytes. */
+    private fun stripLengthByte(values: IntArray, start: Int): IntArray {
+        if (start >= values.size) return IntArray(0)
+        val first = values[start]
+        // A high nibble above zero means an ISO-TP first frame; its header must be kept so the
+        // multi-frame reassembler can read the declared length.
+        if (first > 0x0F) return values.copyOfRange(start, values.size)
+
+        val from = start + 1
+        return if (first in 0..8 && values.size >= from + first) {
+            values.copyOfRange(from, from + first)
+        } else {
+            values.copyOfRange(from, values.size)
+        }
+    }
+
     private val NOISE_PREFIXES = listOf(
         "SEARCHING", "BUS INIT", "WAITING", "STOPPED", "ELM327", "ELM328", "ELM329", "AT",
     )
@@ -68,6 +87,7 @@ object ElmResponseParser {
         var sawError = false
         val messages = mutableListOf<EcuMessage>()
         val frames = LinkedHashMap<Int?, MutableMap<Int, IntArray>>()
+        val pendingIsotp = LinkedHashMap<Int?, IsotpBuffer>()
         val compact = StringBuilder()
 
         fun flushSource(source: Int?) {
@@ -79,6 +99,34 @@ object ElmResponseParser {
                 ?.let { messages += EcuMessage(source, it) }
             frames.remove(source)
         }
+
+        // ISO-TP frames are handled per line so a first frame is not published as data.
+        fun isotp(source: Int?, payload: IntArray, hadHeader: Boolean): EcuMessage? =
+            when (val type = Isotp.type(payload)) {
+                // Without a header the adapter has already removed ISO-TP framing, and the
+                // payload starts directly with the OBD response byte.
+                Isotp.Type.SINGLE -> EcuMessage(
+                    source,
+                    if (hadHeader) Isotp.single(payload) else payload,
+                )
+                Isotp.Type.FIRST -> {
+                    pendingIsotp[source] = Isotp.first(payload)
+                    null
+                }
+                Isotp.Type.CONSECUTIVE -> {
+                    val buffer = pendingIsotp[source] ?: return null
+                    buffer.append(payload)
+                    if (buffer.isComplete) {
+                        pendingIsotp.remove(source)
+                        EcuMessage(source, buffer.toIntArray())
+                    } else {
+                        null
+                    }
+                }
+                // Some adapters strip ISO-TP framing even with headers on, so anything that
+                // is not a multi-frame marker is treated as a complete payload.
+                Isotp.Type.OTHER -> EcuMessage(source, payload)
+            }
 
         fun flushFrames() {
             frames.keys.toList().forEach(::flushSource)
@@ -121,8 +169,9 @@ object ElmResponseParser {
                 tokens.size > 1 -> {
                     flushCompact()
                     flushFrames()
-                    parseHexLine(line)?.takeIf { it.payload.isNotEmpty() }
-                        ?.let { messages += EcuMessage(it.source, it.payload) }
+                    parseHexLine(line)?.let { parsed ->
+                        isotp(parsed.source, parsed.payload, parsed.hadHeader)?.let { messages += it }
+                    }
                 }
                 Hex.isHexToken(tokens[0]) && tokens[0].length > 2 && tokens[0].length % 2 == 0 -> {
                     // ATS0-style compact output: accumulate until the next line.
@@ -132,8 +181,9 @@ object ElmResponseParser {
                 else -> {
                     flushCompact()
                     flushFrames()
-                    parseHexLine(line)?.takeIf { it.payload.isNotEmpty() }
-                        ?.let { messages += EcuMessage(it.source, it.payload) }
+                    parseHexLine(line)?.let { parsed ->
+                        isotp(parsed.source, parsed.payload, parsed.hadHeader)?.let { messages += it }
+                    }
                 }
             }
         }
@@ -150,7 +200,7 @@ object ElmResponseParser {
         return ElmResponse(raw = raw, messages = messages, status = status)
     }
 
-    internal data class ParsedLine(val source: Int?, val payload: IntArray)
+    internal data class ParsedLine(val source: Int?, val payload: IntArray, val hadHeader: Boolean = false)
 
     /**
      * Converts one line of hex tokens to a source address and payload, removing an optional
@@ -163,21 +213,96 @@ object ElmResponseParser {
 
         val values = tokens.map { Hex.hexValue(it) }.toIntArray()
 
-        // 11-bit header (e.g. "7E8 04 41 0C 1A F8") or 29-bit header (e.g. "18DAF110 04 ...").
-        if (values.size >= 3) {
-            val headerDigits = tokens[0].length
-            val looksLike11 = headerDigits == 3 && values[0] in 0x7E0..0x7EF
-            val looksLike29 = headerDigits == 8 && values[0] in 0x18DA0000..0x18DBFFFF
-            if (looksLike11 || looksLike29) {
-                val length = values[1]
-                val payload = if (length in 0..8 && values.size >= length + 2) {
-                    values.copyOfRange(2, 2 + length)
-                } else {
-                    values.copyOfRange(2, values.size)
-                }
-                return ParsedLine(values[0], payload)
+        // 11-bit header, e.g. "7E8 04 41 0C 1A F8" (one token) or "7E8 04 ...".
+        if (values.size >= 3 && tokens[0].length == 3 && values[0] in 0x7E0..0x7EF) {
+            return ParsedLine(values[0], stripLengthByte(values, 1), hadHeader = true)
+        }
+
+        // 29-bit header written as a single token, e.g. "18DAF110 04 41 0C 0C 84".
+        if (values.size >= 3 && tokens[0].length == 8 && values[0] in 0x18DA0000..0x18DBFFFF) {
+            return ParsedLine(values[0], stripLengthByte(values, 1), hadHeader = true)
+        }
+
+        // Three-byte header used by ISO 9141-2, KWP and J1850, e.g. "48 6B 10 41 0C 1A F8".
+        // These buses have no ISO-TP length byte, so the payload starts right after the header.
+        if (values.size >= 5 && values[0] in ISO_HEADER_FORMATS && values[3] in 0x40..0x4A) {
+            val header = (values[0] shl 16) or (values[1] shl 8) or values[2]
+            return ParsedLine(header, values.copyOfRange(3, values.size), hadHeader = true)
+        }
+
+        // 29-bit header split into four bytes, e.g. "18 DA F1 10 04 41 0C 0C 84".
+        // Many adapters print it this way, and without this every payload starts with 0x18.
+        if (values.size >= 5 && values[0] == 0x18 && values[2] in 0xF0..0xFF && values[3] in 0x00..0xFF) {
+            val header = (values[0] shl 24) or (values[1] shl 16) or (values[2] shl 8) or values[3]
+            if (header in 0x18DA0000..0x18DBFFFF) {
+                return ParsedLine(header, stripLengthByte(values, 4), hadHeader = true)
             }
         }
+
         return ParsedLine(null, values)
     }
+}
+
+/**
+ * ISO 15765-2 framing, which CAN ECUs use on top of the raw bus.
+ *
+ * A single frame carries its own length in the first nibble. A multi-frame answer starts with a
+ * first frame (length in 12 bits) and continues with consecutive frames, each carrying a
+ * sequence number. Without this, a VIN response would be published starting at its length byte
+ * and be rejected by the mode 09 decoder.
+ */
+internal object Isotp {
+
+    enum class Type { SINGLE, FIRST, CONSECUTIVE, OTHER }
+
+    fun type(payload: IntArray): Type {
+        if (payload.isEmpty()) return Type.OTHER
+        return when (payload[0] shr 4) {
+            0x0 -> Type.SINGLE
+            0x1 -> Type.FIRST
+            0x2 -> Type.CONSECUTIVE
+            else -> Type.OTHER
+        }
+    }
+
+    /** Payload of a single frame, without the length nibble. */
+    fun single(payload: IntArray): IntArray {
+        val length = payload[0] and 0x0F
+        val from = 1
+        return if (length in 1..7 && payload.size >= from + length) {
+            payload.copyOfRange(from, from + length)
+        } else {
+            payload.copyOfRange(from, payload.size)
+        }
+    }
+
+    /** Starts a multi-frame buffer from a first frame. */
+    fun first(payload: IntArray): IsotpBuffer {
+        val length = ((payload[0] and 0x0F) shl 8) or payload.getOrElse(1) { 0 }
+        val data = if (payload.size > 2) payload.copyOfRange(2, payload.size) else IntArray(0)
+        return IsotpBuffer(length, data)
+    }
+}
+
+/** Accumulates consecutive frames until the declared ISO-TP length is reached. */
+internal class IsotpBuffer(private val expectedLength: Int, initial: IntArray) {
+
+    private val data = ArrayList<Int>(expectedLength.coerceAtLeast(initial.size))
+
+    init {
+        initial.take(expectedLength).forEach(data::add)
+    }
+
+    val isComplete: Boolean get() = data.size >= expectedLength
+
+    fun append(payload: IntArray) {
+        if (payload.size < 2) return
+        // Byte 0 carries the sequence number; the rest is data.
+        for (index in 1 until payload.size) {
+            if (data.size >= expectedLength) return
+            data += payload[index]
+        }
+    }
+
+    fun toIntArray(): IntArray = data.toIntArray()
 }

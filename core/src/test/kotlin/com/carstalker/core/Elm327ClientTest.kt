@@ -94,30 +94,53 @@ class Elm327ClientTest {
         assertTrue("protocol not pinned", "ATSP6" in transport.written)
         assertTrue("CAN auto formatting missing", "ATCAF1" in transport.written)
         assertTrue("CAN flow control missing", "ATCFC1" in transport.written)
-        assertTrue("CAN timeout wrong", "ATST 32" in transport.written)
+        assertTrue("400 ms response window missing", "ATST 64" in transport.written)
         assertFalse("ATAR is for 29-bit only", "ATAR" in transport.written)
     }
 
     @Test
-    fun `29-bit CAN enables auto receive address and slow buses get a longer timeout`() {
+    fun `29-bit CAN enables auto receive address and no CAN setup goes to an ISO bus`() {
         val can = FakeTransport { command ->
-            when (command) {
-                "ATDPN" -> "A7\r\r>"
+            when {
+                command == "ATDPN" -> "A7\r\r>"
+                command == "0100" -> "41 00 BE 1F A8 13\r\r>"
                 else -> "OK\r\r>"
             }
         }
         kotlinx.coroutines.runBlocking { Elm327Client(can).initialize() }
         assertTrue("ATAR missing for 29-bit CAN", "ATAR" in can.written)
+        assertTrue("CAN formatting missing", "ATCAF1" in can.written)
 
         val iso = FakeTransport { command ->
-            when (command) {
-                "ATDPN" -> "A3\r\r>"
+            when {
+                command == "ATDPN" -> "A3\r\r>"
+                command == "0100" -> "41 00 BE 1F A8 13\r\r>"
                 else -> "OK\r\r>"
             }
         }
         kotlinx.coroutines.runBlocking { Elm327Client(iso).initialize() }
-        assertTrue("ISO bus needs a longer window", "ATST 50" in iso.written)
         assertFalse("CAN setup sent to an ISO bus", "ATCAF1" in iso.written)
+        assertTrue("400 ms window missing", "ATST 64" in iso.written)
+    }
+
+    @Test
+    fun `falls back to automatic protocol when the pinned bus stops answering`() {
+        var pinned = false
+        val transport = FakeTransport { command ->
+            when {
+                command == "ATDPN" -> "A6\r\r>"
+                command.startsWith("ATSP6") -> { pinned = true; "OK\r\r>" }
+                // The forced protocol goes silent, as some clones do.
+                command == "0100" && pinned -> "NO DATA\r\r>"
+                command == "ATSP0" -> { pinned = false; "OK\r\r>" }
+                command == "0100" -> "41 00 BE 1F A8 13\r\r>"
+                else -> "OK\r\r>"
+            }
+        }
+        kotlinx.coroutines.runBlocking { Elm327Client(transport).initialize() }
+
+        assertTrue("should have tried to pin", "ATSP6" in transport.written)
+        assertTrue("should have fallen back", "ATSP0" in transport.written)
     }
 
     private fun runBlockingCommand(

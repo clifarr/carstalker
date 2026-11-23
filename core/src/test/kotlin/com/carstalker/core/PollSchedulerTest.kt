@@ -63,7 +63,7 @@ class PollSchedulerTest {
     }
 
     @Test
-    fun `parameters that stop answering are dropped`() {
+    fun `parameters that stop answering are retired but not forgotten`() {
         val scheduler = PollScheduler(silentLimit = 2)
         scheduler.record(0x05, answered = false)
         assertFalse(scheduler.isSilent(0x05))
@@ -75,7 +75,16 @@ class PollSchedulerTest {
             scheduler.advance()
         }
 
-        scheduler.reset()
+        // A dropped Bluetooth frame must not disable a parameter for the whole drive.
+        scheduler.retrySilent()
+        assertFalse(scheduler.isSilent(0x05))
+        assertTrue(0x05 in scheduler.next(requested, allSupported))
+    }
+
+    @Test
+    fun `a single failure does not retire a parameter`() {
+        val scheduler = PollScheduler()
+        repeat(3) { scheduler.record(0x05, answered = false) }
         assertFalse(scheduler.isSilent(0x05))
     }
 

@@ -34,7 +34,7 @@ class Elm327Client(private val transport: Transport) {
         execute("ATH0", 2_000)   // headers off
         execute("ATS1", 2_000)   // spaces on
         execute("ATSP0", 4_000)  // automatic protocol
-        execute("ATAT2", 2_000)  // aggressive adaptive timing
+        execute("ATAT1", 2_000)  // adaptive timing; ATAT2 tightens too aggressively for clones
         execute("ATAL", 2_000)   // allow long (>7 byte) responses
 
         // The adapter only picks a protocol once it has seen traffic, so ask for supported
@@ -64,8 +64,10 @@ class Elm327Client(private val transport: Transport) {
             }
         }
 
-        // CAN answers in a few milliseconds; the older ISO/J1850 buses need a longer window.
-        execute(if (protocol.isCan) "ATST 32" else "ATST 50", 2_000)
+        // ATST hh sets the ECU response window to hh x 4 ms, so 0x64 = 400 ms.
+        // Bluetooth Classic alone costs 100-200 ms per exchange on many clones, so a shorter
+        // window makes every read fail intermittently.
+        execute("ATST 64", 2_000)
 
         val identifier = firstLine(execute("ATI", 2_000).raw) ?: "ELM327"
         val description = firstLine(execute("AT@1", 2_000).raw).orEmpty()
@@ -109,6 +111,9 @@ class Elm327Client(private val transport: Transport) {
         transport.discardPending()
         transport.write((text + "\r").toByteArray(Charsets.US_ASCII))
         val raw = readUntilPrompt(timeoutMs)
+        if (DEBUG) {
+            trace("> $text  < ${raw.replace("\r", "|").replace("\n", "|").take(120)}")
+        }
         return ElmResponseParser.parse(raw)
     }
 
@@ -130,6 +135,12 @@ class Elm327Client(private val transport: Transport) {
 
     companion object {
         const val DEFAULT_TIMEOUT_MS = 4_000L
+
+        /** Raw command/response tracing, enabled for debug builds by the app layer. */
+        var DEBUG: Boolean = false
+
+        /** Sink for [DEBUG] output; the Android layer points this at logcat. */
+        var trace: (String) -> Unit = {}
 
         /** ELM327 v1.5 never existed; clones commonly report it. */
         private val CLONE_VERSION = Regex("(?i)ELM327\\s*v?1\\.5")

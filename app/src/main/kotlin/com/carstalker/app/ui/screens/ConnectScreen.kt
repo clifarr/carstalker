@@ -78,6 +78,7 @@ import com.carstalker.app.data.TransportKind
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.ui.CarStalkerViewModel
 import com.carstalker.app.ui.components.BrandMark
+import com.carstalker.app.ui.components.ChoiceRow
 import com.carstalker.app.ui.components.SignalBars
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.components.StatusPill
@@ -85,6 +86,7 @@ import com.carstalker.app.ui.theme.Carbon
 import com.carstalker.app.ui.theme.LocalStalkerColors
 import com.carstalker.app.transport.classic.ClassicDevice
 import com.carstalker.app.transport.ble.DiscoveredDevice
+import com.carstalker.core.elm.AdapterBenchmark
 
 @Composable
 fun ConnectScreen(
@@ -95,6 +97,7 @@ fun ConnectScreen(
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val connection by viewModel.connection.collectAsStateWithLifecycle()
+    val benchmark by viewModel.benchmark.collectAsStateWithLifecycle()
     val connected = connection is ConnectionState.Ready
     val devices by viewModel.bleDevices.collectAsStateWithLifecycle()
     val scanning by viewModel.bleScanning.collectAsStateWithLifecycle()
@@ -240,6 +243,8 @@ fun ConnectScreen(
             if (connected) {
                 ConnectedCard(
                     ready = connection as ConnectionState.Ready,
+                    benchmark = benchmark,
+                    onRunBenchmark = viewModel::runBenchmark,
                     onOpenDashboard = onOpenDashboard,
                     onDisconnect = viewModel::disconnect,
                 )
@@ -285,8 +290,10 @@ fun ConnectScreen(
 
                 TransportKind.USB -> UsbPane(
                     devices = usbDevices,
+                    baud = settings.usbBaud,
+                    onBaudChange = viewModel::setUsbBaud,
                     onRefresh = viewModel::refreshUsbDevices,
-                    onConnect = viewModel::connectUsb,
+                    onConnect = { device -> viewModel.connectUsb(device, settings.usbBaud) },
                 )
 
                 TransportKind.TCP -> TcpPane(
@@ -407,6 +414,8 @@ fun ConnectScreen(
 @Composable
 private fun ConnectedCard(
     ready: ConnectionState.Ready,
+    benchmark: AdapterBenchmark?,
+    onRunBenchmark: () -> Unit,
     onOpenDashboard: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -431,6 +440,45 @@ private fun ConnectedCard(
             ready.adapter.voltage?.let {
                 Text(
                     "Adapter voltage ${String.format(java.util.Locale.US, "%.1f", it)} V",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.muted,
+                )
+            }
+            if (ready.adapter.isCloneSuspect) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "This adapter reports ELM327 v1.5, a version that never existed. It is almost certainly a clone; expect missing commands and dropped frames.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.danger,
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "Adapter health",
+                style = MaterialTheme.typography.labelMedium,
+                color = stalker.accent,
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = onRunBenchmark) { Text("Run benchmark") }
+                Spacer(Modifier.width(12.dp))
+                benchmark?.let {
+                    Text(
+                        String.format(
+                            java.util.Locale.US,
+                            "%.1f req/s · %.0f ms avg",
+                            it.requestsPerSecond,
+                            it.averageLatencyMs,
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = stalker.accent,
+                    )
+                }
+            }
+            if (benchmark == null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Measures round-trip speed over the current adapter.",
                     style = MaterialTheme.typography.bodySmall,
                     color = stalker.muted,
                 )
@@ -972,11 +1020,35 @@ private fun BluetoothDeviceRow(
 @Composable
 private fun UsbPane(
     devices: List<android.hardware.usb.UsbDevice>,
+    baud: Int,
+    onBaudChange: (Int) -> Unit,
     onRefresh: () -> Unit,
     onConnect: (android.hardware.usb.UsbDevice) -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
     Column {
+        StalkerCard {
+            Column {
+                Text(
+                    "Serial speed",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Use 38400 unless your adapter's manual says otherwise.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.muted,
+                )
+                Spacer(Modifier.height(12.dp))
+                ChoiceRow(
+                    options = listOf(9600 to "9600", 38400 to "38400", 115200 to "115200"),
+                    selected = baud,
+                    onSelect = onBaudChange,
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
         Row(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,

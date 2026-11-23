@@ -34,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.carstalker.app.R
 import com.carstalker.app.ui.theme.LocalStalkerColors
@@ -128,6 +129,41 @@ fun SectionHeader(
             color = stalker.muted,
         )
         trailing?.invoke()
+    }
+}
+
+/** Segmented single-choice row used for small option sets. */
+@Composable
+fun <T> ChoiceRow(
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+) {
+    val stalker = LocalStalkerColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEach { (value, label) ->
+            val active = value == selected
+            Surface(
+                onClick = { onSelect(value) },
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                color = if (active) stalker.accent else Color.Transparent,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (active) Color.Black else stalker.muted,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 9.dp),
+                )
+            }
+        }
     }
 }
 

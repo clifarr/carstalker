@@ -17,22 +17,31 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 
 ## Short description
 
-> Live OBD-II data, diagnostics and drive logs. No ads, accounts or subscriptions.
+> Live OBD-II data and assisted diagnostics. No ads, accounts or subscriptions.
 
 ## Full description
 
-> CarStalker is an OBD-II app for Android. It shows live engine data, reads and clears trouble codes, and records your drives — with no account, no ads, no subscription and no cloud.
+> CarStalker is an OBD-II app for Android that goes beyond a live dashboard. It shows live engine data, reads and clears trouble codes, records your drives — and adds assisted diagnostics that rank likely causes and show the evidence. No account, no ads, no subscription and no cloud. Under 2 MB installed.
 >
 > CarStalker is currently in beta. The core flows are usable, but guided tests and thresholds are still being validated on real cars. Feedback is welcome.
 >
+> NOT JUST ANOTHER OBD-II DASHBOARD
+> Plenty of apps show RPM and clear codes. CarStalker adds step-by-step guided tests that use live data and the ECU's own self-tests to answer the question that matters: which cause is most plausible, what else could explain it, and which check would distinguish them? Every result lists the observations, evidence for and against each cause, competing explanations, a confidence category and one next check — and states what it cannot prove.
+>
+> SMALL BY DESIGN
+> The download is about 1.9 MB and the installed app is under 2 MB — less than 10 MB including app data. Comparable OBD apps routinely ship at tens or hundreds of megabytes because of ads, analytics, crash SDKs and bundled media. CarStalker has none of those, so it installs fast and runs on an old phone left in the glovebox.
+>
+> BUILT ON PUBLIC WORK
+> CarStalker does not invent a new diagnostic science. It compiles publicly available, freely licensed information — OBD-II standards, the CC0 OBDex trouble-code catalogue and public technician explanations — into one offline tool. Sources and licences are in the repository.
+>
 > WHAT IT DOES
+> • Guided diagnostics: step-by-step tests that use live data and the ECU's own self-tests to rank plausible causes, show competing explanations and suggest one next check. Every result states what it cannot prove.
 > • Live telemetry: RPM, speed, load, coolant, intake temperature, MAF, throttle, fuel trims, fuel level and more. The dashboard picks the ten most useful parameters your car reports.
 > • Diagnostics: read stored, pending and permanent trouble codes with human-readable descriptions; clear codes behind a confirmation; see MIL status and readiness monitors.
 > • Freeze frames: see the sensor values recorded when a code was stored.
 > • Mode 06 self-tests: read on-board monitor results with the ECU's own limits and pass/fail state.
 > • DTC knowledge: a bundled CC0 generic database of 9,500+ SAE J2012 codes, with clean-room likely causes and next checks for common codes.
 > • PDF reports: preview a diagnostic report, then share or print it.
-> • Guided diagnostics: step-by-step tests that use live data and the ECU's own self-tests to rank plausible causes, show competing explanations and suggest one next check. Every result states what it cannot prove.
 > • Drive recordings: every sample is written to wide-format CSV, then shared or analysed anywhere. Recordings play back offline with a scrub timeline and live chart.
 > • Custom PIDs: define manufacturer-specific parameters with your own formula.
 > • Adapter support: Bluetooth Classic, Bluetooth LE, USB (FTDI, CH340, CP210x, PL2303, CDC-ACM) and Wi-Fi ELM327 adapters.
@@ -52,7 +61,7 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 
 ## Beta release notes
 
-> First beta: live telemetry, diagnostics with freeze frames and Mode 06, readiness monitors, PDF reports, drive recordings and playback, custom PIDs, guided diagnostics and a full demo mode. No account or hardware is needed to explore the app. Expect changes while the guided tests are validated on more vehicles.
+> First beta: assisted diagnostics, live telemetry, trouble codes with freeze frames and Mode 06, readiness monitors, PDF reports, drive recordings and playback, custom PIDs and a full demo mode. No account or hardware is needed to explore the app. Expect changes while the guided tests are validated on more vehicles.
 
 ## Contact and policy
 
@@ -120,7 +129,7 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 | --- | --- |
 | App icon 512×512, 32-bit PNG with alpha, ≤1 MB | ✅ [icon.png](icon.png) |
 | Feature graphic 1024×500, JPEG or 24-bit PNG without alpha | ✅ [feature-graphic.png](feature-graphic.png) |
-| Phone screenshots, 2–8, 9:16 portrait | ✅ [01-connect.png](screenshots/01-connect.png), [03-dashboard.png](screenshots/03-dashboard.png), [05-codes.png](screenshots/05-codes.png), [08-logs.png](screenshots/08-logs.png), [09-playback.png](screenshots/09-playback.png), [11-custom-pid.png](screenshots/11-custom-pid.png) |
+| Phone screenshots, 2–8, 9:16 portrait | ✅ Lead with diagnostics: [16-diagnose.png](screenshots/16-diagnose.png), [17-guided-capture.png](screenshots/17-guided-capture.png), [18-guided-result.png](screenshots/18-guided-result.png), then [03-dashboard.png](screenshots/03-dashboard.png), [05-codes.png](screenshots/05-codes.png), [09-playback.png](screenshots/09-playback.png). Extras: [01-connect.png](screenshots/01-connect.png), [08-logs.png](screenshots/08-logs.png), [11-custom-pid.png](screenshots/11-custom-pid.png). |
 | Tablet screenshots | Optional; add 4+ if you want to promote tablet support |
 | Promo video | Optional |
 

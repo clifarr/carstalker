@@ -183,6 +183,7 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
                     resetCatalystWizard()
                     resetGuidedTest()
                     _activeGuide.value = null
+                    _benchmark.value = null
                 }
             }
         }
@@ -239,20 +240,20 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
-    fun connectUsb(device: UsbDevice) {
+    fun connectUsb(device: UsbDevice, baud: Int) {
         if (UsbTransport.hasPermission(context, device)) {
-            connectUsbInternal(device)
+            connectUsbInternal(device, baud)
         } else {
             UsbTransport.requestPermission(context, device) { granted ->
-                if (granted) connectUsbInternal(device)
+                if (granted) connectUsbInternal(device, baud)
                 else viewModelScope.launch { _messages.emit("USB permission denied") }
             }
         }
     }
 
-    private fun connectUsbInternal(device: UsbDevice) {
-        val baud = settings.value.usbBaud
+    private fun connectUsbInternal(device: UsbDevice, baud: Int) {
         viewModelScope.launch {
+            graph.settings.update { it.copy(usbBaud = baud) }
             graph.session.connect { UsbTransport(context, device, baud) }
         }
     }
@@ -616,8 +617,6 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
     fun setKeepScreenOn(enabled: Boolean) = updateSettings { it.copy(keepScreenOn = enabled) }
 
     fun setTransport(kind: TransportKind) = updateSettings { it.copy(lastTransport = kind) }
-
-    fun setTcpEndpoint(host: String, port: Int) = updateSettings { it.copy(tcpHost = host, tcpPort = port) }
 
     fun setUsbBaud(baud: Int) = updateSettings { it.copy(usbBaud = baud) }
 

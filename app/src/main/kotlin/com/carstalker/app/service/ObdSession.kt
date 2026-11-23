@@ -188,6 +188,8 @@ class ObdSession(
 
     suspend fun connect(transportFactory: () -> Transport) {
         if (_state.value is ConnectionState.Ready || _state.value is ConnectionState.Connecting) return
+        Elm327Client.DEBUG = BuildConfig.DEBUG
+        Elm327Client.trace = { android.util.Log.d("Elm327", it) }
         _state.value = ConnectionState.Connecting
         try {
             val newTransport = withContext(Dispatchers.IO) {
@@ -634,13 +636,10 @@ class ObdSession(
                 val obd = obd ?: break
                 val current = settingsFlow.value
                 val pids = buildPollList(current)
-                if (pids.isEmpty()) {
-                    scheduler.advance()
-                    delay(500)
-                    continue
-                }
                 val started = System.currentTimeMillis()
-                // Voltage is polled every cycle: cranking dips are brief and worth capturing.
+
+                // Voltage is read every cycle, even when nothing else is scheduled: it is the
+                // one value that proves the adapter is still alive.
                 val voltage = try {
                     obd.readVoltage()
                 } catch (cancelled: CancellationException) {
@@ -651,6 +650,13 @@ class ObdSession(
                 if (voltage != null) {
                     lastValues[LiveKeys.ADAPTER_VOLTAGE] = voltage
                     _live.value = LiveSnapshot(lastValues.toMap(), voltage)
+                }
+
+                if (pids.isEmpty()) {
+                    scheduler.advance()
+                    val elapsedIdle = System.currentTimeMillis() - started
+                    delay((current.pollIntervalMs - elapsedIdle).coerceAtLeast(50))
+                    continue
                 }
                 val values = LinkedHashMap<Int, Double>()
                 for (pid in pids) {
@@ -688,6 +694,8 @@ class ObdSession(
                     }
                 }
                 scheduler.advance()
+                // Every 30 cycles (~10 s) let retired parameters prove themselves again.
+                if (scheduler.cycle % RETRY_SILENT_EVERY == 0L) scheduler.retrySilent()
                 val elapsed = System.currentTimeMillis() - started
                 if (BuildConfig.DEBUG) {
                     android.util.Log.d(
@@ -745,6 +753,9 @@ class ObdSession(
 
     private companion object {
         val ESSENTIAL_PIDS = listOf(0x0C, 0x0D, 0x04, 0x05)
+
+        /** How often retired parameters are given another chance. */
+        const val RETRY_SILENT_EVERY = 30L
         const val MAX_CAPTURE_POINTS = 20_000
     }
 }

@@ -1,6 +1,5 @@
 package com.carstalker.app.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -31,7 +29,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -46,7 +43,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carstalker.app.BuildConfig
@@ -54,6 +50,7 @@ import com.carstalker.app.R
 import com.carstalker.app.data.CustomPid
 import com.carstalker.app.data.ThemeMode
 import com.carstalker.app.ui.CarStalkerViewModel
+import com.carstalker.app.ui.components.ChoiceRow
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.theme.LocalStalkerColors
@@ -67,13 +64,10 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(viewModel: CarStalkerViewModel) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
-    val connection by viewModel.connection.collectAsStateWithLifecycle()
-    val benchmark by viewModel.benchmark.collectAsStateWithLifecycle()
     val stalker = LocalStalkerColors.current
 
     var newCustomPid by remember { mutableStateOf(false) }
     var editingCustomPid by remember { mutableStateOf<CustomPid?>(null) }
-    var showTcpDialog by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
 
     Column(
@@ -87,9 +81,15 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
         Text("SETTINGS", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
         Spacer(Modifier.height(3.dp))
         Text(
-            "Tune your rig",
+            "App preferences",
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onBackground,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Preferences for the app and your car. Adapter and network setup live on the Connect screen.",
+            style = MaterialTheme.typography.bodySmall,
+            color = stalker.muted,
         )
         Spacer(Modifier.height(18.dp))
 
@@ -236,9 +236,9 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
             }
         }
 
-        SettingsSection("Vehicle profile") {
+        SettingsSection("Your car") {
             Text(
-                "Guided tests use the engine type to choose the correct interpretation. It is never inferred from a single live value.",
+                "Fuel and aspiration describe the car you connect to. Guided tests use them to choose the correct interpretation; they are never inferred from a single live value.",
                 style = MaterialTheme.typography.bodySmall,
                 color = stalker.muted,
             )
@@ -279,85 +279,6 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
             )
         }
 
-        SettingsSection("Adapter health") {
-            val ready = connection as? com.carstalker.app.service.ConnectionState.Ready
-            if (ready == null) {
-                Text(
-                    "Connect an adapter to check its identity and measure round-trip speed.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = stalker.muted,
-                )
-            } else {
-                Text(
-                    ready.adapter.identifier,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    ready.adapter.protocolName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = stalker.muted,
-                )
-                if (ready.adapter.isCloneSuspect) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "This adapter reports ELM327 v1.5, a version that never existed. It is almost certainly a clone; expect missing commands and dropped frames.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = stalker.danger,
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = viewModel::runBenchmark) { Text("Run benchmark") }
-                    Spacer(Modifier.width(12.dp))
-                    benchmark?.let {
-                        Text(
-                            String.format(
-                                Locale.US,
-                                "%.1f req/s · %.0f ms avg",
-                                it.requestsPerSecond,
-                                it.averageLatencyMs,
-                            ),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = stalker.accent,
-                        )
-                    }
-                }
-            }
-        }
-
-        SettingsSection("Connection defaults") {
-            Text(
-                "USB baud rate",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            ChoiceRow(
-                options = listOf(9600 to "9600", 38400 to "38400", 115200 to "115200"),
-                selected = settings.usbBaud,
-                onSelect = viewModel::setUsbBaud,
-            )
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Wi-Fi endpoint",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        "${settings.tcpHost}:${settings.tcpPort}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = stalker.muted,
-                    )
-                }
-                OutlinedButton(onClick = { showTcpDialog = true }) { Text("Edit") }
-            }
-        }
-
         SettingsSection("About") {
             AboutRow("Version", BuildConfig.VERSION_NAME)
             AboutRow("Release channel", BuildConfig.RELEASE_CHANNEL.replaceFirstChar { it.uppercase() })
@@ -386,18 +307,6 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 viewModel.addCustomPid(custom)
                 newCustomPid = false
                 editingCustomPid = null
-            },
-        )
-    }
-
-    if (showTcpDialog) {
-        TcpDialog(
-            host = settings.tcpHost,
-            port = settings.tcpPort,
-            onDismiss = { showTcpDialog = false },
-            onSave = { host, port ->
-                viewModel.setTcpEndpoint(host, port)
-                showTcpDialog = false
             },
         )
     }
@@ -445,40 +354,6 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) { content() }
     }
     Spacer(Modifier.height(20.dp))
-}
-
-@Composable
-private fun <T> ChoiceRow(
-    options: List<Pair<T, String>>,
-    selected: T,
-    onSelect: (T) -> Unit,
-) {
-    val stalker = LocalStalkerColors.current
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp))
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        options.forEach { (value, label) ->
-            val active = value == selected
-            Surface(
-                onClick = { onSelect(value) },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(12.dp),
-                color = if (active) stalker.accent else Color.Transparent,
-            ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (active) Color.Black else stalker.muted,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(vertical = 9.dp),
-                )
-            }
-        }
-    }
 }
 
 @Composable
@@ -662,49 +537,3 @@ private fun CustomPidDialog(
     )
 }
 
-@Composable
-private fun TcpDialog(
-    host: String,
-    port: Int,
-    onDismiss: () -> Unit,
-    onSave: (String, Int) -> Unit,
-) {
-    val stalker = LocalStalkerColors.current
-    var hostValue by remember { mutableStateOf(host) }
-    var portValue by remember { mutableStateOf(port.toString()) }
-    val portNumber = portValue.toIntOrNull()
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Wi-Fi endpoint") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = hostValue,
-                    onValueChange = { hostValue = it },
-                    label = { Text("Host") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = portValue,
-                    onValueChange = { portValue = it.filter(Char::isDigit).take(5) },
-                    label = { Text("Port") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onSave(hostValue.trim(), portNumber ?: 35000) },
-                enabled = hostValue.isNotBlank() && portNumber != null && portNumber in 1..65535,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = stalker.accent,
-                    contentColor = Color.Black,
-                ),
-            ) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}

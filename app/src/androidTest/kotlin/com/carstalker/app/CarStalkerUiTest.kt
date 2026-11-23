@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.Assert.assertFalse
@@ -111,15 +112,25 @@ class CarStalkerUiTest {
         // Settings, picker, custom PID and light theme
         click("Settings")
         assertTrue("Settings did not appear", waitFor("SETTINGS"))
+        assertFalse(
+            "Connection setup should live on the Connect screen",
+            device.hasObject(By.text("Connection defaults")),
+        )
         screenshot("08-settings")
 
         clickScrolling("Manage")
         assertTrue("PID picker did not open", waitFor("Dashboard parameters"))
         screenshot("09-pid-picker")
-        device.pressBack()
-        Thread.sleep(500)
+        // Close explicitly: the picker is a full-screen dialog and back is not reliable on all ROMs.
+        // The settings page stays scrolled behind the dialog, so check that the dialog is gone
+        // instead of waiting for the SETTINGS header.
+        clickDesc("Close")
+        if (!device.wait(Until.gone(By.desc("Close")), 3_000)) device.pressBack()
+        assertTrue("Picker did not close", device.wait(Until.gone(By.desc("Close")), 3_000))
 
-        assertTrue("Custom PID section not reachable", scrollTo("Add custom PID"))
+        val reached = scrollTo("Add custom PID")
+        if (!reached) screenshot("debug-settings-bottom")
+        assertTrue("Custom PID section not reachable", reached)
         device.waitForIdle(1_500)
         var dialogOpened = false
         repeat(3) {
@@ -153,6 +164,8 @@ class CarStalkerUiTest {
         click("Live")
         assertTrue("Connected screen did not open", waitFor("Adapter connected", 5_000))
         assertTrue("Open dashboard action missing", waitFor("Open dashboard", 5_000))
+        assertTrue("Adapter health missing from connected screen", waitFor("Adapter health", 5_000))
+        assertTrue("Benchmark action missing", waitFor("Run benchmark", 5_000))
         screenshot("12-connected")
         click("Open dashboard")
         assertTrue("Open dashboard did not return to live data", waitFor("LIVE TELEMETRY", 10_000))
@@ -166,6 +179,8 @@ class CarStalkerUiTest {
         assertTrue(waitFor("Adapter connected", 5_000))
         click("Disconnect")
         assertTrue("Disconnect did not restore the picker", waitFor("Connect an OBD-II adapter", 10_000))
+        click("USB")
+        assertTrue("USB serial speed missing", waitFor("Serial speed", 5_000))
         click("Bluetooth")
         assertTrue("Bluetooth pane did not open", waitFor("Bluetooth Classic", 5_000))
         assertFalse("Classic discovery started automatically", device.hasObject(By.text("Discovering devices")))
@@ -215,9 +230,29 @@ class CarStalkerUiTest {
         click(text)
     }
 
+    /** Scrolls one small step. Re-resolves the container because Compose replaces the node. */
+    private fun scrollStep(direction: Direction): Boolean {
+        val scrollable = device.findObject(By.scrollable(true)) ?: return false
+        return runCatching { scrollable.scroll(direction, 0.2f) }.getOrDefault(false)
+    }
+
     private fun scrollTo(text: String): Boolean {
         if (device.hasObject(By.text(text))) return true
-        // Compose exposes no UiScrollable container here, so swipe slowly in small steps until the text appears.
+        // Swipes fling past short settings pages, so drive the scroll container directly.
+        if (device.findObject(By.scrollable(true)) != null) {
+            // Small steps: a 0.6-page step can jump straight over a short settings row.
+            repeat(25) {
+                scrollStep(Direction.DOWN)
+                device.waitForIdle(200)
+                if (device.hasObject(By.text(text))) return true
+            }
+            repeat(25) {
+                scrollStep(Direction.UP)
+                device.waitForIdle(200)
+                if (device.hasObject(By.text(text))) return true
+            }
+            return device.hasObject(By.text(text))
+        }
         repeat(12) {
             device.swipe(
                 device.displayWidth / 2,
@@ -234,6 +269,13 @@ class CarStalkerUiTest {
     }
 
     private fun scrollToBeginning() {
+        if (device.findObject(By.scrollable(true)) != null) {
+            repeat(20) {
+                scrollStep(Direction.UP)
+                device.waitForIdle(150)
+            }
+            return
+        }
         repeat(8) {
             device.swipe(
                 device.displayWidth / 2,

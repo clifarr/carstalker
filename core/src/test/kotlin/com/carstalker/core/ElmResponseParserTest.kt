@@ -28,6 +28,53 @@ class ElmResponseParserTest {
     }
 
     @Test
+    fun `strips a 29-bit header printed as four separate bytes`() {
+        // Real output from an ELM327 clone on a 29-bit CAN bus.
+        val response = ElmResponseParser.parse("18 DA F1 10 04 41 0C 0C 84\r\r>")
+        assertArrayEquals(intArrayOf(0x41, 0x0C, 0x0C, 0x84), response.messages.single().payload)
+        assertEquals(0x18DAF110, response.messages.single().source)
+    }
+
+    @Test
+    fun `keeps short payloads after a split 29-bit header`() {
+        val response = ElmResponseParser.parse("18 DA F1 10 03 41 0D 00\r\r>")
+        assertArrayEquals(intArrayOf(0x41, 0x0D, 0x00), response.messages.single().payload)
+    }
+
+    @Test
+    fun `strips a three-byte ISO 9141 header`() {
+        val response = ElmResponseParser.parse("48 6B 10 41 0C 1A F8\r\r>")
+        assertArrayEquals(intArrayOf(0x41, 0x0C, 0x1A, 0xF8), response.messages.single().payload)
+    }
+
+    @Test
+    fun `strips a three-byte J1850 header`() {
+        val response = ElmResponseParser.parse("41 6B 10 41 0D 32\r\r>")
+        assertArrayEquals(intArrayOf(0x41, 0x0D, 0x32), response.messages.single().payload)
+    }
+
+    @Test
+    fun `reassembles ISO-TP multi-frame VIN across first and consecutive frames`() {
+        // Shape of a real 29-bit CAN VIN read: 0x14 bytes of payload across three frames.
+        // 0x14 = 20 bytes: 49 02 01 followed by a 17-character VIN.
+        val raw = listOf(
+            "18 DA F1 10 10 14 49 02 01 31 48 47 43",
+            "18 DA F1 10 21 4D 38 32 36 33 33 41",
+            "18 DA F1 10 22 30 30 34 33 35 32 00",
+        ).joinToString("\r") + "\r\r>"
+
+        val response = ElmResponseParser.parse(raw)
+        val message = response.messages.single()
+
+        assertEquals(0x18DAF110, message.source)
+        assertEquals(0x49, message.payload[0])
+        assertEquals(
+            "1HGCM82633A004352",
+            com.carstalker.core.vehicle.Mode09Decoder.decodeVin(listOf(message.payload)),
+        )
+    }
+
+    @Test
     fun `reassembles ELM multi-frame output`() {
         val raw = "0: 49 02 01 00 00 00 31\r1: 47 31 4A 43 35 34 34 34\r2: 52 31 32 33 34 35 36 37\r\r>"
         val response = ElmResponseParser.parse(raw)

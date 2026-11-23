@@ -52,7 +52,20 @@ class PollScheduler(
         }
         val count = (misses[pidId] ?: 0) + 1
         misses[pidId] = count
-        if (count >= silentLimit) silent += pidId
+        if (count >= silentLimit) {
+            // Retire the PID for a while instead of for the session: a dropped Bluetooth frame
+            // or a momentary bus stall must not disable a parameter until reconnection.
+            silent += pidId
+            misses.remove(pidId)
+        }
+    }
+
+    /**
+     * Gives retired PIDs another chance. Called periodically by the polling loop so a transient
+     * failure cannot hide a parameter for the rest of the drive.
+     */
+    fun retrySilent() {
+        silent.clear()
     }
 
     fun reset() {
@@ -70,6 +83,6 @@ class PollScheduler(
         /** Changes over seconds: polled every other cycle. */
         val DEFAULT_MEDIUM = setOf(0x04, 0x05, 0x0F, 0x10, 0x11, 0x2F, 0x5E)
 
-        const val DEFAULT_SILENT_LIMIT = 3
+        const val DEFAULT_SILENT_LIMIT = 6
     }
 }
