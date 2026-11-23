@@ -31,6 +31,12 @@ The release workflow signs the APK with the upload key. Add these repository sec
 
 Never commit the keystore or `keystore.properties`. The workflow writes `keystore.properties` from the secrets, builds, and deletes it afterward.
 
+The **Release APK** workflow is disabled until the secrets are configured. After adding them, enable it with:
+
+```bash
+gh workflow enable "Release APK" --repo clifarr/carstalker
+```
+
 ## Release
 
 > The first release can be created manually with `gh release create` before the signing secrets are configured. Subsequent releases use the workflow below.
