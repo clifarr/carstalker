@@ -36,6 +36,7 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -81,6 +82,7 @@ fun PidPickerSheet(
     customPids: List<com.carstalker.app.data.CustomPid>,
     onToggle: (Int) -> Unit,
     onUseRecommended: () -> Unit,
+    onFindPedalChannels: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
@@ -224,6 +226,19 @@ fun PidPickerSheet(
                                     color = stalker.warning,
                                 )
                             }
+                            Spacer(Modifier.height(6.dp))
+                            OutlinedButton(
+                                onClick = onFindPedalChannels,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("Find my throttle & pedal channels", color = stalker.accent)
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Samples the car while you press the pedal and recommends the values that actually move.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.muted,
+                            )
                         }
                         IconButton(onClick = onDismiss) {
                             Icon(

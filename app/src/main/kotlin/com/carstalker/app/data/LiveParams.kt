@@ -25,7 +25,7 @@ val AdapterVoltageParam: Pid = Pid.of(
     category = Pid.Category.ELECTRICAL,
     decimals = 2,
     weight = 82,
-) { 0.0 }.copy(isCustom = true)
+) { 0.0 }
 
 /** Every parameter the dashboard can show, including the adapter measurement. */
 val DashboardParams: List<Pid> = listOf(AdapterVoltageParam) + PidCatalog.standard
@@ -122,6 +122,19 @@ val DefaultDashboardPids: List<Int> = recommendedDashboardPids(emptySet())
 
 fun dashboardParam(id: Int): Pid? =
     if (id == LiveKeys.ADAPTER_VOLTAGE) AdapterVoltageParam else PidCatalog.find(id)
+
+/**
+ * Applies the pedal finder's calibration to a raw channel value. Interpolation is on by
+ * default, so a car that reports 12 % released and 88 % pressed reads 0–100 % like a car
+ * that already uses the full range.
+ */
+fun applyPedalCalibration(pidId: Int, value: Double, settings: AppSettings): Double {
+    if (!settings.pedalCalibrationEnabled) return value
+    val calibration = settings.pedalCalibrations.firstOrNull {
+        it.pidId == pidId && it.vehicleKey == settings.profileVehicleKey
+    } ?: return value
+    return calibration.normalize(value) ?: value
+}
 
 /**
  * Older builds pinned real PID 42 for battery voltage. Adapter voltage now has its own id,

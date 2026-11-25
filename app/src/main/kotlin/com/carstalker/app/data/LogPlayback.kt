@@ -50,6 +50,55 @@ data class PlaybackSeries(
         }
         return found?.value
     }
+
+    /** Minimum and maximum of the samples inside the visible window, or null when empty. */
+    fun rangeIn(startMs: Long, endMs: Long): ClosedFloatingPointRange<Double>? {
+        val first = points.firstAtOrAfter(startMs)
+        val last = points.lastAtOrBefore(endMs)
+        if (first > last) return null
+        var low = Double.MAX_VALUE
+        var high = -Double.MAX_VALUE
+        for (index in first..last) {
+            val value = points[index].value
+            if (value < low) low = value
+            if (value > high) high = value
+        }
+        return low..high
+    }
+}
+
+/** Index of the first point at or after [timeMs], or [size] when there is none. */
+internal fun List<PlaybackPoint>.firstAtOrAfter(timeMs: Long): Int {
+    var low = 0
+    var high = lastIndex
+    var result = size
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid].timeMs >= timeMs) {
+            result = mid
+            high = mid - 1
+        } else {
+            low = mid + 1
+        }
+    }
+    return result
+}
+
+/** Index of the last point at or before [timeMs], or -1 when there is none. */
+internal fun List<PlaybackPoint>.lastAtOrBefore(timeMs: Long): Int {
+    var low = 0
+    var high = lastIndex
+    var result = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid].timeMs <= timeMs) {
+            result = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return result
 }
 
 data class PlaybackData(

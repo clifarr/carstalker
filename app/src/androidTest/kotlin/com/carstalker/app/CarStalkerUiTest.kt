@@ -81,11 +81,27 @@ class CarStalkerUiTest {
         click("Settings")
         assertTrue("Settings should stay available without an adapter", waitFor("SETTINGS"))
 
-        // Leave the app on the startup screen for the other smoke test.
+        // Visiting an offline-safe tab must not re-enable the data tabs.
+        click("Dash")
+        assertTrue(
+            "Dash became enabled after visiting Recordings and Settings",
+            device.hasObject(By.text("SETTINGS")),
+        )
+        click("Diagnose")
+        assertTrue(
+            "Diagnose became enabled after visiting Recordings and Settings",
+            device.hasObject(By.text("SETTINGS")),
+        )
+        click("Codes")
+        assertTrue(
+            "Codes became enabled after visiting Recordings and Settings",
+            device.hasObject(By.text("SETTINGS")),
+        )
+
+        // Leave the app on the startup screen for the other smoke test. Back must not open
+        // the Dashboard while its tab is disabled.
         device.pressBack()
-        assertTrue("Back from Settings did not reach the dashboard", waitFor("No adapter connected"))
-        click("Connect adapter")
-        assertTrue("Did not return to the startup screen", waitFor(stillOnStartup))
+        assertTrue("Back from Settings did not return to the startup screen", waitFor(stillOnStartup))
     }
 
     @Test

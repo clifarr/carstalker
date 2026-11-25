@@ -1,8 +1,10 @@
 package com.carstalker.app.service
 
+import android.content.Context
 import com.carstalker.app.BuildConfig
 import com.carstalker.app.data.AdapterVoltageParam
 import com.carstalker.app.data.LiveKeys
+import com.carstalker.app.data.applyPedalCalibration
 import com.carstalker.app.data.AppSettings
 import com.carstalker.app.data.LogColumnMeta
 import com.carstalker.app.data.LogRepository
@@ -147,6 +149,7 @@ fun DtcReport.toScanContext(): ScanContext = ScanContext(
 class ObdSession(
     private val settings: SettingsRepository,
     private val logs: LogRepository,
+    private val context: Context,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -678,6 +681,7 @@ class ObdSession(
             isDemo = ready?.transportName?.contains("Demo") == true,
         )
         _recording.value = true
+        RecordingService.start(context)
         _notice.value = "Recording started"
     }
 
@@ -686,7 +690,16 @@ class ObdSession(
         writer?.close()
         writer = null
         _recording.value = false
+        RecordingService.stop(context)
         _notice.value = "Recording saved"
+    }
+
+    /**
+     * Re-posts the recording notification after POST_NOTIFICATIONS is granted. The service
+     * was already running; starting it again updates the existing foreground notification.
+     */
+    fun refreshRecordingNotification() {
+        if (_recording.value) RecordingService.start(context)
     }
 
     private fun startPolling() {
@@ -748,13 +761,16 @@ class ObdSession(
                 val values = LinkedHashMap<Int, Double>()
                 for (pid in pids) {
                     if (!isActive) break
-                    val value = try {
+                    val raw = try {
                         obd.readPid(pid)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Throwable) {
                         null
                     }
+                    val value = raw
+                        ?.takeIf { it.isFinite() }
+                        ?.let { applyPedalCalibration(pid.id, it, current) }
                     val answered = value != null && value.isFinite()
                     scheduler.record(pid.id, answered)
                     val answeredAt = System.currentTimeMillis()

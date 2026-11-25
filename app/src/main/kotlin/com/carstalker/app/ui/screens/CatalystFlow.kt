@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.ui.CarStalkerViewModel
+import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.components.StatusPill
@@ -337,7 +338,7 @@ private fun CatalystIntroCard(
                     colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
                 ) { Text("Start guided test") }
             } else {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionRow {
                     Button(
                         onClick = onConnect,
                         colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
@@ -434,7 +435,7 @@ private fun PrepareStep(
                 color = stalker.muted,
             )
             Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionRow {
                 OutlinedButton(onClick = onReadCodes, enabled = connected) {
                     Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
@@ -489,7 +490,7 @@ private fun PrepareStep(
                 )
             }
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActionRow(spacing = 10.dp) {
                 TextButton(onClick = onBack) { Text("Back") }
                 Button(
                     onClick = onNext,
@@ -661,7 +662,7 @@ private fun QuestionsStep(
                 )
             }
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActionRow(spacing = 10.dp) {
                 TextButton(onClick = onBack) { Text("Back") }
                 Button(
                     onClick = onAnalyze,

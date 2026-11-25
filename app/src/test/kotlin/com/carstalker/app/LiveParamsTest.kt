@@ -1,9 +1,12 @@
 package com.carstalker.app
 
+import com.carstalker.app.data.AppSettings
 import com.carstalker.app.data.DEFAULT_DASHBOARD_SIZE
 import com.carstalker.app.data.DefaultDashboardPids
 import com.carstalker.app.data.LiveKeys
 import com.carstalker.app.data.MAX_DASHBOARD_PIDS
+import com.carstalker.app.data.PedalCalibration
+import com.carstalker.app.data.applyPedalCalibration
 import com.carstalker.app.data.isSampleStale
 import com.carstalker.app.data.movedDashboardPids
 import com.carstalker.app.data.recommendedDashboardPids
@@ -100,5 +103,58 @@ class LiveParamsTest {
         assertFalse(isSampleStale(lastSampleAt = 10_000L, now = 19_999L))
         assertTrue(isSampleStale(lastSampleAt = 10_000L, now = 20_001L))
         assertTrue(isSampleStale(lastSampleAt = 1_000L, now = 2_500L, thresholdMs = 1_000L))
+    }
+
+    @Test
+    fun `pedal calibration maps the released and pressed readings to zero and one hundred`() {
+        val settings = AppSettings(
+            pedalCalibrations = listOf(
+                PedalCalibration(0x49, releasedValue = 12.0, pressedValue = 88.0, vehicleKey = "unknown"),
+            ),
+        )
+
+        assertEquals(0.0, applyPedalCalibration(0x49, 12.0, settings), 0.001)
+        assertEquals(100.0, applyPedalCalibration(0x49, 88.0, settings), 0.001)
+        assertEquals(50.0, applyPedalCalibration(0x49, 50.0, settings), 0.001)
+        // Values outside the captured range are clamped instead of exceeding 0–100 %.
+        assertEquals(0.0, applyPedalCalibration(0x49, 5.0, settings), 0.001)
+        assertEquals(100.0, applyPedalCalibration(0x49, 95.0, settings), 0.001)
+        // A channel without a calibration is left untouched.
+        assertEquals(42.0, applyPedalCalibration(0x0C, 42.0, settings), 0.001)
+    }
+
+    @Test
+    fun `pedal calibration can be turned off`() {
+        val settings = AppSettings(
+            pedalCalibrations = listOf(
+                PedalCalibration(0x49, releasedValue = 12.0, pressedValue = 88.0, vehicleKey = "unknown"),
+            ),
+            pedalCalibrationEnabled = false,
+        )
+
+        assertEquals(12.0, applyPedalCalibration(0x49, 12.0, settings), 0.001)
+    }
+
+    @Test
+    fun `a calibration with no usable span is ignored`() {
+        val settings = AppSettings(
+            pedalCalibrations = listOf(
+                PedalCalibration(0x49, releasedValue = 10.0, pressedValue = 10.5, vehicleKey = "unknown"),
+            ),
+        )
+
+        assertEquals(10.2, applyPedalCalibration(0x49, 10.2, settings), 0.001)
+    }
+
+    @Test
+    fun `a calibration from another car is not applied`() {
+        val settings = AppSettings(
+            pedalCalibrations = listOf(
+                PedalCalibration(0x49, releasedValue = 12.0, pressedValue = 88.0, vehicleKey = "OTHER-VIN"),
+            ),
+            profileVehicleKey = "unknown",
+        )
+
+        assertEquals(12.0, applyPedalCalibration(0x49, 12.0, settings), 0.001)
     }
 }

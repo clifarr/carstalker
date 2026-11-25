@@ -54,6 +54,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.service.toScanContext
 import com.carstalker.app.ui.CarStalkerViewModel
+import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.AvailabilityPill
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
@@ -126,7 +127,7 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Step-by-step tests that use live data and the ECU's own self-tests. Evidence, alternatives and one clear next check — no account, no cloud, no parts cannon.",
+            "Step-by-step tests that use live data and the ECU's own self-tests.",
             style = MaterialTheme.typography.bodySmall,
             color = stalker.muted,
         )
@@ -143,7 +144,7 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
                         color = stalker.muted,
                     )
                     Spacer(Modifier.height(12.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ActionRow {
                         Button(
                             onClick = onOpenConnect,
                             colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
@@ -329,6 +330,7 @@ private fun DiagnosticDefinition.matchesQuery(query: String): Boolean {
         category.label.lowercase().contains(text)
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun EngineProfileCard(capabilities: VehicleCapabilities, viewModel: CarStalkerViewModel) {
     val stalker = LocalStalkerColors.current
@@ -344,14 +346,20 @@ private fun EngineProfileCard(capabilities: VehicleCapabilities, viewModel: CarS
             )
             Spacer(Modifier.height(8.dp))
             Text("Fuel", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 listOf(FuelType.UNKNOWN, FuelType.PETROL, FuelType.DIESEL).forEach { fuel ->
                     ProfileChip(fuel.label, profile.fuelType == fuel) { viewModel.setFuelType(fuel) }
                 }
             }
             Spacer(Modifier.height(8.dp))
             Text("Aspiration", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 listOf(Aspiration.UNKNOWN, Aspiration.NATURALLY_ASPIRATED, Aspiration.FORCED_INDUCTION).forEach { aspiration ->
                     ProfileChip(aspiration.label, profile.aspiration == aspiration) { viewModel.setAspiration(aspiration) }
                 }
@@ -392,6 +400,7 @@ private fun ProfileChip(label: String, active: Boolean, onClick: () -> Unit) {
                 label,
                 style = MaterialTheme.typography.labelSmall,
                 color = if (active) stalker.accent else stalker.muted,
+                maxLines = 1,
             )
         }
     }

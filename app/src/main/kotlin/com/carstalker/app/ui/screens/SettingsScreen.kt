@@ -49,6 +49,7 @@ import com.carstalker.app.BuildConfig
 import com.carstalker.app.R
 import com.carstalker.app.data.CustomPid
 import com.carstalker.app.data.ThemeMode
+import com.carstalker.app.data.dashboardParam
 import com.carstalker.app.ui.CarStalkerViewModel
 import com.carstalker.app.ui.components.ChoiceRow
 import com.carstalker.app.ui.components.SectionHeader
@@ -143,16 +144,18 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                             color = MaterialTheme.colorScheme.onSurface,
                         )
                         Text(
-                            if (settings.pollIntervalMs == 0) "as fast as possible" else "${settings.pollIntervalMs} ms",
+                            "${settings.pollIntervalMs} ms",
                             style = MaterialTheme.typography.labelMedium,
                             color = stalker.accent,
                         )
                     }
+                    // 0 means automatic, which the switch above already owns. Keeping it out of
+                    // the manual range stops the switch saying "off" while the slider says 0.
                     Slider(
-                        value = settings.pollIntervalMs.toFloat(),
+                        value = settings.pollIntervalMs.coerceIn(50, 1000).toFloat(),
                         onValueChange = { viewModel.setPollInterval(it.roundToInt()) },
-                        valueRange = 0f..1000f,
-                        steps = 19,
+                        valueRange = 50f..1000f,
+                        steps = 18,
                         colors = SliderDefaults.colors(
                             thumbColor = stalker.accent,
                             activeTrackColor = stalker.accent,
@@ -160,7 +163,7 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                         ),
                     )
                     Text(
-                        "0 polls as fast as the adapter allows. The adapter handles one command at a time, so fast values like RPM are polled more often than slow ones like coolant.",
+                        "The adapter handles one command at a time, so fast values like RPM are polled more often than slow ones like coolant. Turn Automatic polling back on to let the adapter pick the rate.",
                         style = MaterialTheme.typography.bodySmall,
                         color = stalker.muted,
                     )
@@ -298,6 +301,27 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
         }
 
         SettingsSection("Your car") {
+            val profile = settings.vehicleProfiles[settings.profileVehicleKey]
+            // Keyed on the car only: re-keying on the saved nickname would trim spaces while typing.
+            var vehicleName by remember(settings.profileVehicleKey) {
+                mutableStateOf(profile?.nickname.orEmpty())
+            }
+            OutlinedTextField(
+                value = vehicleName,
+                onValueChange = {
+                    vehicleName = it.take(32)
+                    viewModel.setVehicleNickname(it)
+                },
+                label = { Text("Vehicle name (optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Shown on the dashboard when the car does not report a VIN. Stored against this car's ECU fingerprint, not another vehicle.",
+                style = MaterialTheme.typography.bodySmall,
+                color = stalker.muted,
+            )
+            Spacer(Modifier.height(10.dp))
             Text(
                 "Fuel and aspiration describe the car you connect to. Guided tests use them to choose the correct interpretation; they are never inferred from a single live value.",
                 style = MaterialTheme.typography.bodySmall,
@@ -323,6 +347,26 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 selected = settings.aspiration,
                 onSelect = viewModel::setAspiration,
             )
+            Spacer(Modifier.height(10.dp))
+            SwitchRow(
+                title = "Interpolate pedal readings",
+                description = "Rescale the channel chosen by the pedal finder so a released pedal reads 0 % and a fully pressed pedal reads 100 %.",
+                checked = settings.pedalCalibrationEnabled,
+                onCheckedChange = viewModel::setPedalCalibrationEnabled,
+            )
+            val calibrated = settings.pedalCalibrations
+                .filter { it.vehicleKey == settings.profileVehicleKey }
+            if (calibrated.isNotEmpty()) {
+                Text(
+                    "Calibrated channels: " + calibrated.joinToString { calibration ->
+                        val name = dashboardParam(calibration.pidId)?.shortName
+                            ?: calibration.pidId.toString()
+                        "$name (${calibration.releasedValue.toInt()}–${calibration.pressedValue.toInt()} %)"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+            }
         }
 
         SettingsSection("Reports") {
@@ -338,6 +382,12 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = stalker.muted,
             )
+            SwitchRow(
+                title = "Include full VIN in reports",
+                description = "Off by default. When off, exported PDF reports mask the VIN except its last four characters.",
+                checked = settings.includeVinInReports,
+                onCheckedChange = viewModel::setIncludeVinInReports,
+            )
         }
 
         SettingsSection("About") {
@@ -347,27 +397,18 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 onClick = { showPrivacy = true },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Privacy policy") }
-            SwitchRow(
-                title = "Include full VIN in reports",
-                description = "Off by default. When off, exported PDF reports mask the VIN except its last four characters.",
-                checked = settings.includeVinInReports,
-                onCheckedChange = viewModel::setIncludeVinInReports,
-            )
             OutlinedButton(
                 onClick = viewModel::exportConnectionDiagnostics,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Export connection diagnostics") }
-            Spacer(Modifier.height(6.dp))
             OutlinedButton(
                 onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker") },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Source code") }
-            Spacer(Modifier.height(6.dp))
             OutlinedButton(
                 onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker/issues/new") },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Report an issue") }
-            Spacer(Modifier.height(6.dp))
             OutlinedButton(
                 onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker/releases") },
                 modifier = Modifier.fillMaxWidth(),

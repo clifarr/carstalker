@@ -12,7 +12,7 @@ class AppGraph(context: Context) {
     val appContext: Context = context.applicationContext
     val settings = SettingsRepository(appContext)
     val logs = LogRepository(appContext)
-    val session = ObdSession(settings, logs)
+    val session = ObdSession(settings, logs, appContext)
     val bleScanner = BleScanner(appContext)
     val classicScanner = ClassicScanner(appContext)
 }

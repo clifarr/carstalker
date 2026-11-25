@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">CarStalker</string>
+    <string name="recording_notification_title">Recording drive data</string>
+    <string name="recording_notification_text">CarStalker keeps sampling while the app is in the background.</string>
+    <string name="recording_notification_stop">Stop</string>
+    <string name="recording_channel_name">Recording</string>
+    <string name="recording_channel_description">Shown while a drive recording is running.</string>
 </resources>

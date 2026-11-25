@@ -4,7 +4,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
@@ -58,7 +58,11 @@ fun RadialGauge(
     val startAngle = 135f
     val sweep = 270f
 
-    Box(modifier = modifier.aspectRatio(1f), contentAlignment = Alignment.Center) {
+    BoxWithConstraints(modifier = modifier.aspectRatio(1f), contentAlignment = Alignment.Center) {
+        // The readout is a fixed 34sp while the dial shrinks with the screen, so on a small
+        // phone the digits collide with the arc. Scale the type with the dial instead.
+        val dialDp = minOf(maxWidth, maxHeight).value
+        val valueScale = (dialDp / 190f).coerceIn(0.62f, 1f)
         Canvas(Modifier.matchParentSize().padding(if (compact) 6.dp else 10.dp)) {
             val diameter = min(size.width, size.height)
             val stroke = diameter * 0.045f
@@ -163,21 +167,29 @@ fun RadialGauge(
             Text(
                 text = formatValue(value, decimals),
                 style = NumericStyle.copy(
-                    fontSize = if (compact) 26.sp else 34.sp,
+                    fontSize = ((if (compact) 26f else 34f) * valueScale).sp,
                     fontWeight = FontWeight.Bold,
                 ),
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
                 text = unit,
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (11f * valueScale).sp,
+                    lineHeight = (14f * valueScale).sp,
+                ),
                 color = stalker.muted,
+                maxLines = 1,
             )
             if (!compact) {
                 Text(
                     text = label.uppercase(Locale.US),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = (11f * valueScale).sp,
+                        lineHeight = (14f * valueScale).sp,
+                    ),
                     color = stalker.muted,
+                    maxLines = 1,
                     modifier = Modifier.padding(top = 2.dp),
                 )
             }

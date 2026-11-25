@@ -3,7 +3,9 @@ package com.carstalker.app.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -37,8 +39,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,12 +50,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
@@ -67,8 +70,9 @@ import androidx.compose.ui.unit.sp
 import com.carstalker.app.data.LogPlaybackParser
 import com.carstalker.app.data.LogSession
 import com.carstalker.app.data.PlaybackData
-import com.carstalker.app.data.PlaybackPoint
 import com.carstalker.app.data.PlaybackSeries
+import com.carstalker.app.data.firstAtOrAfter
+import com.carstalker.app.data.lastAtOrBefore
 import com.carstalker.app.ui.components.ChartWindow
 import com.carstalker.app.ui.components.EmptyState
 import com.carstalker.app.ui.components.SectionHeader
@@ -82,6 +86,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun LogDetailScreen(
     session: LogSession,
@@ -94,8 +99,7 @@ fun LogDetailScreen(
 
     var data by remember(session.meta.id) { mutableStateOf<PlaybackData?>(null) }
     var position by remember { mutableStateOf(0L) }
-    var selectedKey by remember { mutableStateOf<String?>(null) }
-    var compareAll by remember { mutableStateOf(false) }
+    var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmDelete by remember { mutableStateOf(false) }
     var window by remember { mutableStateOf(ChartWindow.full(0L, 1L)) }
 
@@ -109,7 +113,7 @@ fun LogDetailScreen(
     LaunchedEffect(data) {
         val loaded = data ?: return@LaunchedEffect
         position = loaded.startMs
-        selectedKey = loaded.series.firstOrNull()?.key
+        selectedKeys = loaded.series.firstOrNull()?.let { setOf(it.key) } ?: emptySet()
         window = ChartWindow.full(loaded.startMs, loaded.endMs)
     }
 
@@ -209,14 +213,32 @@ fun LogDetailScreen(
                 val colors = playback.series.mapIndexed { index, series ->
                     series.key to palette[index % palette.size]
                 }.toMap()
-                val selectedSeries = playback.series.firstOrNull { it.key == selectedKey }
-                    ?: playback.series.first()
+                // A single tap isolates one series; a long press adds or removes one so several
+                // lines can be compared without the old "Compare all" mode.
+                fun selectOnly(key: String) {
+                    selectedKeys = setOf(key)
+                }
+                fun toggleSelection(key: String) {
+                    selectedKeys = when {
+                        key !in selectedKeys -> selectedKeys + key
+                        selectedKeys.size > 1 -> selectedKeys - key
+                        else -> selectedKeys
+                    }
+                }
+                val selectedSeries = playback.series
+                    .filter { it.key in selectedKeys }
+                    .ifEmpty { listOf(playback.series.first()) }
+                val singleSelected = selectedSeries.size == 1
                 val elapsed = (position - playback.startMs).coerceAtLeast(0L)
-                val duration = playback.durationMs
                 val fullWindow = remember(playback.startMs, playback.endMs) {
                     ChartWindow.full(playback.startMs, playback.endMs)
                 }
                 val zoomed = window.isZoomed(playback.startMs, playback.endMs)
+                val scaleRange = if (singleSelected) {
+                    selectedSeries.first().rangeIn(window.startMs, window.endMs)
+                } else {
+                    null
+                }
 
                 Surface(
                     shape = RoundedCornerShape(24.dp),
@@ -225,10 +247,10 @@ fun LogDetailScreen(
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         PlaybackChart(
-                            series = if (compareAll) playback.series else listOf(selectedSeries),
+                            series = selectedSeries,
                             window = window,
                             positionMs = position,
-                            selectedKey = selectedSeries.key,
+                            scaleRange = scaleRange,
                             colors = colors,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -248,8 +270,16 @@ fun LogDetailScreen(
                                         },
                                     )
                                 }
-                                .pointerInput(playback.startMs, playback.endMs) {
+                                .pointerInput(playback.startMs, playback.endMs, scaleRange) {
                                     detectTapGestures(
+                                        onTap = { offset ->
+                                            val gutter = if (scaleRange != null) 48.dp.toPx() else 8.dp.toPx()
+                                            val chartWidth = (size.width - gutter).coerceAtLeast(1f)
+                                            val fraction = ((offset.x - gutter) / chartWidth).coerceIn(0f, 1f)
+                                            position = (window.startMs + window.durationMs * fraction)
+                                                .toLong()
+                                                .coerceIn(playback.startMs, playback.endMs)
+                                        },
                                         onDoubleTap = { window = fullWindow },
                                     )
                                 },
@@ -265,25 +295,24 @@ fun LogDetailScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = stalker.muted,
                             )
-                            TextButton(
-                                onClick = { compareAll = !compareAll },
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp),
-                            ) {
-                                Text(
-                                    if (compareAll) "Single series" else "Compare all",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = stalker.accentSecondary,
-                                )
-                            }
+                            Text(
+                                if (singleSelected) {
+                                    "Tap the chart to read a time"
+                                } else {
+                                    "${selectedSeries.size} values selected"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.accentSecondary,
+                            )
                             Text(
                                 formatClock((window.endMs - playback.startMs).coerceAtLeast(0L)),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = stalker.muted,
                             )
                         }
-                        if (compareAll) {
+                        if (!singleSelected) {
                             Text(
-                                "Each series is scaled to the zoomed window; units differ. Select one series for an exact reading.",
+                                "Each line uses its own scale; units may differ.",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = stalker.warning,
                             )
@@ -304,25 +333,8 @@ fun LogDetailScreen(
                                 }
                             }
                         }
-                        Slider(
-                            value = elapsed.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
-                            onValueChange = {
-                                val next = (playback.startMs + it.toLong()).coerceIn(playback.startMs, playback.endMs)
-                                position = next
-                                // Keep the playhead visible when the slider moves outside the window.
-                                if (next < window.startMs || next > window.endMs) {
-                                    window = window.centeredOn(next, playback.startMs, playback.endMs)
-                                }
-                            },
-                            valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
-                            colors = SliderDefaults.colors(
-                                thumbColor = stalker.accent,
-                                activeTrackColor = stalker.accent,
-                                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
-                            ),
-                        )
                         Text(
-                            "Pinch the chart to zoom, drag it to pan, double-tap to reset.",
+                            "Pinch to zoom, drag to pan, tap to read a time, double-tap to reset.",
                             style = MaterialTheme.typography.labelSmall,
                             color = stalker.muted,
                         )
@@ -330,6 +342,12 @@ fun LogDetailScreen(
                 }
 
                 Spacer(Modifier.height(16.dp))
+                Text(
+                    "Tap a value to isolate it. Press and hold to compare several.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+                Spacer(Modifier.height(8.dp))
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -337,10 +355,15 @@ fun LogDetailScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     playback.series.forEach { series ->
-                        val active = series.key == selectedSeries.key
+                        val active = series.key in selectedKeys
                         val color = colors[series.key] ?: stalker.accent
                         Surface(
-                            onClick = { selectedKey = series.key },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .combinedClickable(
+                                    onClick = { selectOnly(series.key) },
+                                    onLongClick = { toggleSelection(series.key) },
+                                ),
                             shape = RoundedCornerShape(50),
                             color = if (active) color.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
                             border = BorderStroke(1.dp, if (active) color.copy(alpha = 0.5f) else Color.Transparent),
@@ -368,32 +391,73 @@ fun LogDetailScreen(
                 }
 
                 Spacer(Modifier.height(16.dp))
-                StalkerCard(accent = colors[selectedSeries.key]) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                Modifier
-                                    .size(8.dp)
-                                    .background(colors[selectedSeries.key] ?: stalker.accent, CircleShape),
-                            )
-                            Spacer(Modifier.width(8.dp))
+                if (singleSelected) {
+                    val only = selectedSeries.first()
+                    StalkerCard(accent = colors[only.key]) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    Modifier
+                                        .size(8.dp)
+                                        .background(colors[only.key] ?: stalker.accent, CircleShape),
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    only.name,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    only.unit,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stalker.muted,
+                                )
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                PlaybackStat("Min", only.min, only.unit)
+                                PlaybackStat("Average", only.average, only.unit)
+                                PlaybackStat("Max", only.max, only.unit)
+                            }
+                        }
+                    }
+                } else {
+                    StalkerCard(accent = colors[selectedSeries.first().key]) {
+                        Column {
                             Text(
-                                selectedSeries.name,
+                                "${selectedSeries.size} values selected",
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.weight(1f),
                             )
-                            Text(
-                                selectedSeries.unit,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = stalker.muted,
-                            )
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            PlaybackStat("Min", selectedSeries.min, selectedSeries.unit)
-                            PlaybackStat("Average", selectedSeries.average, selectedSeries.unit)
-                            PlaybackStat("Max", selectedSeries.max, selectedSeries.unit)
+                            Spacer(Modifier.height(8.dp))
+                            selectedSeries.forEach { series ->
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        Modifier
+                                            .size(8.dp)
+                                            .background(colors[series.key] ?: stalker.accent, CircleShape),
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            series.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            "Min ${formatNumber(series.min)} · Average " +
+                                                "${formatNumber(series.average)} · Max " +
+                                                "${formatNumber(series.max)} ${series.unit}".trim(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = stalker.muted,
+                                        )
+                                    }
+                                }
+                                Spacer(Modifier.height(6.dp))
+                            }
                         }
                     }
                 }
@@ -412,9 +476,10 @@ fun LogDetailScreen(
                                     series = series,
                                     value = series.valueAt(position),
                                     color = colors[series.key] ?: stalker.accent,
-                                    selected = series.key == selectedSeries.key,
+                                    selected = series.key in selectedKeys,
                                     modifier = Modifier.weight(1f),
-                                    onClick = { selectedKey = series.key },
+                                    onClick = { selectOnly(series.key) },
+                                    onLongClick = { toggleSelection(series.key) },
                                 )
                             }
                             if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -458,16 +523,20 @@ private fun PlaybackChart(
     series: List<PlaybackSeries>,
     window: ChartWindow,
     positionMs: Long,
-    selectedKey: String?,
+    scaleRange: ClosedFloatingPointRange<Double>?,
     colors: Map<String, Color>,
     modifier: Modifier = Modifier,
 ) {
     val grid = MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+    val scaleLabel = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
     val playhead = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
 
     Canvas(modifier) {
+        // A single series gets a left gutter with the visible minimum and maximum. Comparing
+        // several series hides it, because each line uses its own scale.
+        val gutter = if (scaleRange != null) 48.dp.toPx() else 8f
         val padding = 8f
-        val chartWidth = size.width
+        val chartWidth = size.width - gutter
         val chartHeight = size.height
         val duration = window.durationMs.toFloat()
         val usableHeight = chartHeight - padding * 2
@@ -476,18 +545,16 @@ private fun PlaybackChart(
             val y = padding + usableHeight * line / 3f
             drawLine(
                 color = grid,
-                start = Offset(0f, y),
-                end = Offset(chartWidth, y),
+                start = Offset(gutter, y),
+                end = Offset(size.width, y),
                 strokeWidth = 1f,
             )
         }
 
-        fun xFor(timeMs: Long): Float = ((timeMs - window.startMs) / duration) * chartWidth
+        fun xFor(timeMs: Long): Float = gutter + ((timeMs - window.startMs) / duration) * chartWidth
 
-        // Draw unselected series first, then the highlighted one.
-        series.sortedBy { it.key == selectedKey }.forEach { item ->
+        series.forEach { item ->
             val color = colors[item.key] ?: Color.White
-            val selected = item.key == selectedKey
             val points = item.points
             if (points.isEmpty()) return@forEach
 
@@ -497,13 +564,20 @@ private fun PlaybackChart(
 
             // The vertical scale follows the visible window, so zooming in reveals detail
             // instead of flattening the line against the whole-recording range.
-            var low = Double.MAX_VALUE
-            var high = -Double.MAX_VALUE
-            for (index in firstVisible..lastVisible) {
-                val value = points[index].value
-                if (value < low) low = value
-                if (value > high) high = value
+            val visible = if (scaleRange != null) {
+                scaleRange.start to scaleRange.endInclusive
+            } else {
+                var low = Double.MAX_VALUE
+                var high = -Double.MAX_VALUE
+                for (index in firstVisible..lastVisible) {
+                    val value = points[index].value
+                    if (value < low) low = value
+                    if (value > high) high = value
+                }
+                low to high
             }
+            val low = visible.first
+            val high = visible.second
             // A flat line is centred instead of being pinned to the bottom edge.
             val range = high - low
             val base = if (range > 1e-9) low else low - 0.5
@@ -517,44 +591,62 @@ private fun PlaybackChart(
             // One neighbour on each side keeps the line continuous at the window edges.
             val drawFirst = (firstVisible - 1).coerceAtLeast(0)
             val drawLast = (lastVisible + 1).coerceAtMost(points.lastIndex)
-            clipRect(0f, 0f, chartWidth, chartHeight) {
+            clipRect(gutter, 0f, size.width, chartHeight) {
                 if (drawFirst == drawLast) {
                     drawCircle(
-                        color = color.copy(alpha = if (selected) 1f else 0.4f),
-                        radius = if (selected) 4f else 2.5f,
+                        color = color,
+                        radius = 4f,
                         center = Offset(xFor(points[drawFirst].timeMs), yFor(points[drawFirst].value)),
                     )
                 } else {
                     val step = ((drawLast - drawFirst + 1) / 600).coerceAtLeast(1)
-                    val path = Path()
-                    var first = true
+                    val stroke = Stroke(width = 2.6f, cap = StrokeCap.Round)
+                    var path = Path()
+                    var pathOpen = false
+                    var previousTime: Long? = null
+
+                    fun flushPath() {
+                        if (!pathOpen) return
+                        drawPath(path = path, color = color, style = stroke)
+                        path = Path()
+                        pathOpen = false
+                    }
+
                     var index = drawFirst
                     while (index <= drawLast) {
                         val point = points[index]
+                        // A long absence of samples (for example while the app was frozen in
+                        // the background) is a gap, not a straight line between two readings.
+                        if (previousTime != null && point.timeMs - previousTime > PLAYBACK_GAP_MS) {
+                            flushPath()
+                        }
                         val x = xFor(point.timeMs)
                         val y = yFor(point.value)
-                        if (first) {
+                        if (!pathOpen) {
                             path.moveTo(x, y)
-                            first = false
+                            pathOpen = true
+                            drawCircle(color, radius = 2f, center = Offset(x, y))
                         } else {
                             path.lineTo(x, y)
                         }
+                        previousTime = point.timeMs
                         index += step
                     }
                     val last = points[drawLast]
-                    path.lineTo(xFor(last.timeMs), yFor(last.value))
-
-                    drawPath(
-                        path = path,
-                        color = color.copy(alpha = if (selected) 1f else 0.25f),
-                        style = Stroke(
-                            width = if (selected) 3f else 1.6f,
-                            cap = StrokeCap.Round,
-                        ),
-                    )
+                    if (previousTime != null && last.timeMs - previousTime > PLAYBACK_GAP_MS) {
+                        flushPath()
+                        drawCircle(
+                            color,
+                            radius = 2f,
+                            center = Offset(xFor(last.timeMs), yFor(last.value)),
+                        )
+                    } else if (pathOpen) {
+                        path.lineTo(xFor(last.timeMs), yFor(last.value))
+                        flushPath()
+                    }
                 }
 
-                if (selected && positionMs in window.startMs..window.endMs) {
+                if (positionMs in window.startMs..window.endMs) {
                     val value = item.valueAt(positionMs) ?: return@clipRect
                     val x = xFor(positionMs)
                     val y = yFor(value)
@@ -562,6 +654,28 @@ private fun PlaybackChart(
                     drawCircle(color, radius = 4f, center = Offset(x, y))
                 }
             }
+        }
+
+        if (scaleRange != null) {
+            val labelPaint = android.graphics.Paint().apply {
+                color = scaleLabel.toArgb()
+                textSize = 10.sp.toPx()
+                isAntiAlias = true
+                textAlign = android.graphics.Paint.Align.RIGHT
+            }
+            val labelX = gutter - 6.dp.toPx()
+            drawContext.canvas.nativeCanvas.drawText(
+                formatNumber(scaleRange.endInclusive),
+                labelX,
+                padding + labelPaint.textSize,
+                labelPaint,
+            )
+            drawContext.canvas.nativeCanvas.drawText(
+                formatNumber(scaleRange.start),
+                labelX,
+                chartHeight - padding,
+                labelPaint,
+            )
         }
 
         if (positionMs in window.startMs..window.endMs) {
@@ -620,40 +734,6 @@ private suspend fun PointerInputScope.detectChartTransformGestures(
     }
 }
 
-/** Index of the first point at or after [timeMs], or [size] when there is none. */
-private fun List<PlaybackPoint>.firstAtOrAfter(timeMs: Long): Int {
-    var low = 0
-    var high = lastIndex
-    var result = size
-    while (low <= high) {
-        val mid = (low + high) ushr 1
-        if (this[mid].timeMs >= timeMs) {
-            result = mid
-            high = mid - 1
-        } else {
-            low = mid + 1
-        }
-    }
-    return result
-}
-
-/** Index of the last point at or before [timeMs], or -1 when there is none. */
-private fun List<PlaybackPoint>.lastAtOrBefore(timeMs: Long): Int {
-    var low = 0
-    var high = lastIndex
-    var result = -1
-    while (low <= high) {
-        val mid = (low + high) ushr 1
-        if (this[mid].timeMs <= timeMs) {
-            result = mid
-            low = mid + 1
-        } else {
-            high = mid - 1
-        }
-    }
-    return result
-}
-
 @Composable
 private fun PlaybackStat(label: String, value: Double, unit: String) {
     val stalker = LocalStalkerColors.current
@@ -669,6 +749,7 @@ private fun PlaybackStat(label: String, value: Double, unit: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaybackValueTile(
     series: PlaybackSeries,
@@ -677,11 +758,13 @@ private fun PlaybackValueTile(
     selected: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
     Surface(
-        onClick = onClick,
-        modifier = modifier,
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface,
         border = BorderStroke(
@@ -722,6 +805,9 @@ private fun PlaybackValueTile(
         }
     }
 }
+
+/** A gap longer than this is rendered as missing data instead of a straight line. */
+private const val PLAYBACK_GAP_MS = 15_000L
 
 private fun formatNumber(value: Double): String {
     if (!value.isFinite()) return "—"

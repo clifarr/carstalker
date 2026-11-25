@@ -38,6 +38,26 @@ data class CustomPid(
     val id: Int get() = pidHex.toIntOrNull(16) ?: -1
 }
 
+/**
+ * Maps one pedal or throttle channel from the values measured by the pedal finder to 0–100 %.
+ * [releasedValue] was read with the pedal up, [pressedValue] with it fully pressed.
+ */
+@Serializable
+data class PedalCalibration(
+    val pidId: Int,
+    val releasedValue: Double,
+    val pressedValue: Double,
+    /** VIN/calibration/fingerprint key this calibration was measured on. */
+    val vehicleKey: String = "",
+) {
+    /** Returns null when the captured span is too small to interpolate safely. */
+    fun normalize(value: Double): Double? {
+        val span = pressedValue - releasedValue
+        if (span < 1.0) return null
+        return ((value - releasedValue) / span * 100.0).coerceIn(0.0, 100.0)
+    }
+}
+
 data class AppSettings(
     val unitSystem: UnitSystem = UnitSystem.METRIC,
     val themeMode: ThemeMode = ThemeMode.DARK,
@@ -62,6 +82,10 @@ data class AppSettings(
     val vehicleProfiles: Map<String, VehicleProfileEntry> = emptyMap(),
     val profileVehicleKey: String = "unknown",
     val includeVinInReports: Boolean = false,
+    /** Pedal/throttle channels rescaled from the finder's released and pressed readings. */
+    val pedalCalibrations: List<PedalCalibration> = emptyList(),
+    /** Rescale calibrated pedal channels to 0–100 %. Enabled by default. */
+    val pedalCalibrationEnabled: Boolean = true,
 ) {
     val activeDashboard: DashboardConfig
         get() = dashboards.firstOrNull { it.id == activeDashboardId }
@@ -75,6 +99,8 @@ data class AppSettings(
 data class VehicleProfileEntry(
     val fuelType: FuelType = FuelType.UNKNOWN,
     val aspiration: Aspiration = Aspiration.UNKNOWN,
+    /** User-chosen name, shown when the car does not report a VIN. */
+    val nickname: String? = null,
 )
 
 class SettingsRepository(private val context: Context) {
@@ -103,6 +129,8 @@ class SettingsRepository(private val context: Context) {
         val vehicleProfiles = stringPreferencesKey("vehicle_profiles")
         val profileVehicleKey = stringPreferencesKey("profile_vehicle_key")
         val includeVinInReports = booleanPreferencesKey("include_vin_in_reports")
+        val pedalCalibrations = stringPreferencesKey("pedal_calibrations")
+        val pedalCalibrationEnabled = booleanPreferencesKey("pedal_calibration_enabled")
     }
 
     val settings: Flow<AppSettings> = context.settingsStore.data.map { it.toSettings() }
@@ -166,6 +194,10 @@ class SettingsRepository(private val context: Context) {
                 ?: emptyMap(),
             profileVehicleKey = this[Keys.profileVehicleKey] ?: "unknown",
             includeVinInReports = this[Keys.includeVinInReports] ?: false,
+            pedalCalibrations = this[Keys.pedalCalibrations]
+                ?.let { runCatching { json.decodeFromString<List<PedalCalibration>>(it) }.getOrNull() }
+                ?: emptyList(),
+            pedalCalibrationEnabled = this[Keys.pedalCalibrationEnabled] ?: true,
         )
     }
 
@@ -193,5 +225,7 @@ class SettingsRepository(private val context: Context) {
         this[Keys.vehicleProfiles] = json.encodeToString(settings.vehicleProfiles)
         this[Keys.profileVehicleKey] = settings.profileVehicleKey
         this[Keys.includeVinInReports] = settings.includeVinInReports
+        this[Keys.pedalCalibrations] = json.encodeToString(settings.pedalCalibrations)
+        this[Keys.pedalCalibrationEnabled] = settings.pedalCalibrationEnabled
     }
 }

@@ -58,6 +58,7 @@ import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.service.toScanContext
 import com.carstalker.app.transport.demo.DemoScenario
 import com.carstalker.app.ui.CarStalkerViewModel
+import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.AvailabilityPill
 import com.carstalker.app.ui.components.DemoControls
 import com.carstalker.app.ui.components.MetricChip
@@ -319,7 +320,7 @@ private fun GuidedIntroView(
             }
             Spacer(Modifier.height(14.dp))
             if (!connected) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ActionRow {
                     Button(
                         onClick = onConnect,
                         colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),

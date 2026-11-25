@@ -69,6 +69,18 @@ class LogPlaybackParserTest {
     }
 
     @Test
+    fun `visible range follows the zoom window`() {
+        val data = LogPlaybackParser.parse(csv)
+        val rpm = data.series.first { it.name == "Engine speed" }
+
+        assertEquals(800.0, rpm.rangeIn(data.startMs, data.endMs)!!.start, 0.001)
+        assertEquals(2500.0, rpm.rangeIn(data.startMs, data.endMs)!!.endInclusive, 0.001)
+        assertEquals(1500.0, rpm.rangeIn(data.startMs + 500, data.startMs + 1_000)!!.start, 0.001)
+        assertEquals(2500.0, rpm.rangeIn(data.startMs + 500, data.startMs + 1_000)!!.endInclusive, 0.001)
+        assertNull(rpm.rangeIn(data.startMs + 2_000, data.endMs))
+    }
+
+    @Test
     fun `ignores malformed rows and empty input`() {
         val data = LogPlaybackParser.parse(
             sequenceOf(

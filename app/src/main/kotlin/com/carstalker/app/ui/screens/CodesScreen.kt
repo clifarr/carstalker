@@ -32,6 +32,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -53,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.ui.CarStalkerViewModel
+import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.EmptyState
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
@@ -61,6 +63,8 @@ import com.carstalker.app.ui.theme.LocalStalkerColors
 import com.carstalker.core.dtc.Dtc
 import com.carstalker.core.dtc.DtcGroup
 import com.carstalker.core.dtc.DtcKnowledge
+import com.carstalker.core.guided.DiagnosticDefinition
+import com.carstalker.core.guided.DiagnosticRegistry
 import com.carstalker.core.obd.Ecu
 import com.carstalker.core.obd.FreezeFrame
 import com.carstalker.core.obd.Mode06Result
@@ -70,7 +74,11 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
+fun CodesScreen(
+    viewModel: CarStalkerViewModel,
+    onOpenConnect: () -> Unit,
+    onOpenDiagnose: () -> Unit,
+) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val report by viewModel.dtcReport.collectAsStateWithLifecycle()
     val stalker = LocalStalkerColors.current
@@ -110,18 +118,13 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
                 )
                 Spacer(Modifier.width(8.dp))
             }
+            // Reading is the labelled action in the status card below; a second unlabelled
+            // refresh icon here only asked the user to guess which one to press.
             IconButton(onClick = viewModel::exportReport, enabled = connected && report.readAt > 0) {
                 Icon(
                     Icons.Rounded.PictureAsPdf,
                     contentDescription = "Preview PDF report",
                     tint = if (connected && report.readAt > 0) stalker.accent else stalker.muted,
-                )
-            }
-            IconButton(onClick = viewModel::readCodes, enabled = connected) {
-                Icon(
-                    Icons.Rounded.Refresh,
-                    contentDescription = "Read codes",
-                    tint = if (connected) stalker.accent else stalker.muted,
                 )
             }
         }
@@ -248,7 +251,7 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
                     ),
                 ) {
                     Text(
-                        "${group.label} $count",
+                        "${group.label} · $count",
                         style = MaterialTheme.typography.labelMedium,
                         color = if (active) stalker.accent else stalker.muted,
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -261,6 +264,14 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
         val selected = report.modules.firstOrNull { Ecu.key(it.source) == selectedModule }
         val codes = selected?.forGroup(selectedGroup) ?: report.forGroup(selectedGroup)
         if (codes.isEmpty()) {
+            // The selected group being empty does not mean the car is clean; another group may
+            // hold codes. Say so instead of implying the module has no faults.
+            val elsewhere = DtcGroup.entries
+                .filter { it != selectedGroup }
+                .mapNotNull { group ->
+                    val count = (selected?.forGroup(group) ?: report.forGroup(group)).size
+                    if (count > 0) "${group.label.lowercase()} $count" else null
+                }
             StalkerCard {
                 EmptyState(
                     title = when (selectedGroup) {
@@ -268,10 +279,11 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
                         DtcGroup.PENDING -> "No pending codes"
                         DtcGroup.PERMANENT -> "No permanent codes"
                     },
-                    message = if (connected) {
-                        "This module reports clean. Read again after a drive cycle."
-                    } else {
-                        "Connect an adapter to scan this module."
+                    message = when {
+                        !connected -> "Connect an adapter to scan this module."
+                        elsewhere.isNotEmpty() ->
+                            "Nothing in this group, but this module reports ${elsewhere.joinToString(" and ")}. Switch group above."
+                        else -> "This module reports clean. Read again after a drive cycle."
                     },
                 )
             }
@@ -280,9 +292,14 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
                 codes.forEach { dtc ->
                     DtcCard(
                         dtc = dtc,
+                        guide = DiagnosticRegistry.implemented().firstOrNull { it.matchesCode(dtc.code) },
                         onCopy = {
                             clipboard.setText(AnnotatedString(dtc.code))
                             Toast.makeText(context, "${dtc.code} copied", Toast.LENGTH_SHORT).show()
+                        },
+                        onOpenGuide = { definition ->
+                            viewModel.openGuide(definition)
+                            onOpenDiagnose()
                         },
                     )
                 }
@@ -377,7 +394,9 @@ private fun MilCard(
                     Text(
                         when {
                             milOn -> "Check-engine light on"
-                            total > 0 -> "$total code${if (total == 1) "" else "s"} stored"
+                            stored > 0 -> "$stored stored code${if (stored == 1) "" else "s"}"
+                            pending > 0 -> "$pending pending code${if (pending == 1) "" else "s"}"
+                            permanent > 0 -> "$permanent permanent code${if (permanent == 1) "" else "s"}"
                             else -> "No faults reported"
                         },
                         style = MaterialTheme.typography.titleMedium,
@@ -395,7 +414,7 @@ private fun MilCard(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActionRow(spacing = 10.dp) {
                 Button(
                     onClick = onRead,
                     enabled = connected,
@@ -418,7 +437,12 @@ private fun MilCard(
 }
 
 @Composable
-private fun DtcCard(dtc: Dtc, onCopy: () -> Unit) {
+private fun DtcCard(
+    dtc: Dtc,
+    guide: DiagnosticDefinition?,
+    onCopy: () -> Unit,
+    onOpenGuide: (DiagnosticDefinition) -> Unit,
+) {
     val stalker = LocalStalkerColors.current
     val guidance = remember(dtc.code) { DtcKnowledge.forCode(dtc.code) }
     var expanded by remember { mutableStateOf(false) }
@@ -501,6 +525,17 @@ private fun DtcCard(dtc: Dtc, onCopy: () -> Unit) {
                     guidance.nextSteps.forEach { step ->
                         Text("• $step", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                     }
+                    // A code is a starting point. Offer the guided test that measures it rather
+                    // than leaving the user to find the Diagnose tab themselves.
+                    if (guide != null) {
+                        Spacer(Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = { onOpenGuide(guide) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Run the guided test for ${dtc.code}")
+                        }
+                    }
                 }
             }
         }
@@ -520,7 +555,7 @@ private fun ModuleChip(label: String, count: Int, active: Boolean, onClick: () -
         ),
     ) {
         Text(
-            "$label $count",
+            "$label · $count",
             style = MaterialTheme.typography.labelMedium,
             color = if (active) stalker.accent else stalker.muted,
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),

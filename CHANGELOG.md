@@ -3,6 +3,101 @@
 All notable changes to CarStalker are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses semantic versioning.
 
+## [Unreleased]
+
+## [0.5.0] - 2026-11-25
+
+Version code 107. A combined release: background drive recording, pedal interpolation and a
+playback chart built around selecting values, plus a small-phone/landscape layout sweep, a pedal
+channel finder, vehicle names and a first-run clarity pass.
+
+### Added
+
+- **Background recording.** Starting a recording also starts a foreground service with a partial
+  wake lock and, for network adapters, a Wi-Fi lock. Android no longer freezes the poll loop when
+  the app is backgrounded, so a drive recording has no long empty stretch in the middle. The
+  notification offers a Stop action and returns to the app when tapped. On Android 13+ the app
+  asks for notification permission the first time a recording starts, so the ongoing-recording
+  notification is visible and can be used to stop the recording.
+- **Throttle & pedal channel finder.** The parameter picker samples the throttle-plate and
+  accelerator-pedal channels for ten seconds while the pedal is pressed, then recommends the
+  channel that actually moved. It measures the connected car instead of relying on a per-model PID
+  database, which does not exist in a reliable free form, and it works on cars that do not report a
+  VIN. Applying a recommendation replaces a static throttle-plate card on the dashboard instead of
+  growing the list past its ten-value limit.
+- **Pedal interpolation.** The channel finder records the released and fully pressed readings and
+  uses them to rescale the chosen pedal or throttle channel to 0–100 %. Cars that report only part
+  of the range (for example 12 % released and 88 % pressed) read naturally on the dashboard.
+  Interpolation is on by default and can be turned off in Settings → Your car; the calibration is
+  stored against the car it was measured on.
+- **Vehicle name.** Settings → Your car stores an optional name against the car's ECU fingerprint
+  (VIN, calibration ID or protocol fingerprint). It is used on the dashboard and in the vehicle card
+  when the car reports no VIN, is migrated from a name entered before the first connection, and is
+  never reused for a different car.
+
+### Changed
+
+- **Recording playback.** The redundant timeline slider is gone; tap the chart to place the
+  playhead. A single series now shows a left-hand minimum/maximum scale. Tap a value to isolate it
+  or press and hold to compare several values; the shared scale is hidden while several are
+  selected. A long gap between samples is drawn as a gap instead of a misleading straight line.
+- Throttle and pedal parameters now say what they measure: `Throttle plate position` (`0x11`),
+  `Throttle plate position (relative)` (`0x45`), `Throttle plate position B` (`0x47`),
+  `Accelerator pedal D (main)` (`0x49`, short name `Pedal`) and `Accelerator pedal E (secondary)`
+  (`0x4A`, short name `Pedal 2`).
+- The throttle detail note points at the pedal channels and the channel finder.
+
+### Fixed
+
+- **Small-phone and landscape layout.** Swept every screen on a 320dp-wide phone, a 360dp phone, a
+  411dp phone and both orientations. Fixes:
+  - Navigation labels no longer wrap onto a second line at 320–360dp; the bar drops its letter
+    tracking and steps the type down instead, which also stops the bar from growing taller than the
+    screen it sits on.
+  - Held sideways, the five destinations move from the bottom bar to a rail on the leading edge.
+    The bottom bar plus the system bars previously left roughly 150dp of content height, so tab
+    screens opened mid-card with their own navigation cut in half.
+  - The dashboard gauges are capped to a share of the viewport height, so landscape shows the whole
+    dial instead of the top two thirds of an oversized one.
+  - Gauge readouts scale with the dial. The digits were a fixed 34sp, so on a small dial the value,
+    unit and label crowded the arc.
+  - Rows of actions wrap instead of squeezing their labels: "Try demo" no longer breaks into a
+    two-line button, and "Clear codes" stays on one line.
+  - The fuel and aspiration chips wrap onto a second line. "Turbo / supercharged" was being crushed
+    into a 3.5dp-wide column that rendered one character per line.
+  - The connect screen no longer applies the navigation-bar inset twice, which had pushed
+    "Allow Bluetooth" off-screen on a 640dp-tall phone.
+  - Module and code-group chips separate the count from the name (`Engine · 2`), so an unnamed
+    module no longer reads `ECU 0x7E9 0`.
+
+- **First-run and next-step clarity.**
+  - The dashboard no longer scrolls itself down to the gauges a second after opening. The jump hid
+    the vehicle name and the record button without the user asking, so a first-time user never saw
+    the control that the recordings screen tells them to press. Scrolling is now entirely theirs;
+    the gauges still snap into place when they scroll near them.
+  - A stored code now offers `Run the guided test for P0420` from its expanded guidance, which
+    opens the matching test on the Diagnose tab. The app's premise is finding the cause, not just
+    reading the code, and this was the missing link between the two screens.
+  - The codes summary names the group the codes are actually in (`1 pending code`) instead of
+    calling every fault "stored", which contradicted the `No stored codes` empty state below it.
+  - An empty code group now points at the group that does hold codes
+    (`Nothing in this group, but this module reports pending 1`) instead of implying the module is
+    clean.
+  - `Include full VIN in reports` moved from About to Reports, where the rest of the report
+    settings live.
+  - The codes screen dropped its unlabelled refresh icon; `Read codes` in the status card is the
+    labelled action two lines below it.
+  - The manual poll-rate slider no longer reaches 0, which is the automatic rate. Dragging it to 0
+    used to leave the switch reading "Automatic polling: off" while the app polled automatically.
+  - The Diagnose intro is one line instead of three; the marketing copy was pushing the catalogue
+    below the fold on small screens.
+
+- **Offline navigation.** Dashboard, Diagnose and Codes stay disabled while no adapter is
+  connected, even after opening Recordings or Settings from the startup screen. Pressing back
+  from those offline-safe tabs returns to the startup screen instead of opening the Dashboard.
+- **Adapter voltage label.** The adapter's `ATRV` measurement is a built-in value, not a custom
+  PID, so its detail sheet no longer says "Custom PID — manage it in Settings".
+
 ## [0.4.0] - 2026-11-25
 
 Version code 105. The changes below come from the independent 2026-11-24 UI and functionality

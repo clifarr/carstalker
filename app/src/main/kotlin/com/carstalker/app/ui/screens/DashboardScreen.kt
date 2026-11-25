@@ -13,6 +13,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -74,6 +75,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.AnnotatedString
@@ -99,6 +101,7 @@ import com.carstalker.app.ui.components.StatusPill
 import com.carstalker.app.data.LiveKeys
 import com.carstalker.app.data.dashboardParam
 import com.carstalker.app.data.isSampleStale
+import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.formatValue
 import com.carstalker.app.ui.theme.Amber
 import com.carstalker.app.ui.theme.Ember
@@ -135,6 +138,10 @@ fun DashboardScreen(
     var detailPid by remember { mutableStateOf<Pid?>(null) }
     var showDashboards by remember { mutableStateOf(false) }
     val dashboard = settings.activeDashboard
+    val vehicleName = settings.vehicleProfiles[settings.profileVehicleKey]
+        ?.nickname
+        ?.takeIf { it.isNotBlank() }
+        ?: identity.displayName
 
     val customPids = remember(settings.customPids) {
         settings.customPids.filter { it.enabled }.mapNotNull { it.toPid() }
@@ -203,7 +210,6 @@ fun DashboardScreen(
 
     val scrollState = rememberScrollState()
     var topAnchorPx by remember { mutableStateOf<Float?>(null) }
-    var autoScrollDone by remember(dashboard.id) { mutableStateOf(false) }
     // The gauge top is a magnetic point: the scroll resists leaving it and settles on it.
     val stickyBandPx = with(LocalDensity.current) { 96.dp.toPx() }
     val dragSlopPx = LocalViewConfiguration.current.touchSlop.toFloat()
@@ -226,24 +232,17 @@ fun DashboardScreen(
 
     // A dashboard opens at the top, then the first data block slides under the header so the
     // gauges (or the single large card) use the whole screen. A manual scroll cancels this.
+    // A dashboard opens at the top and stays there. It used to scroll itself down to the gauges
+    // a second after opening, which hid the vehicle name and the record button without the user
+    // asking; scrolling is now entirely theirs.
     LaunchedEffect(dashboard.id) {
         scrollState.scrollTo(0)
-        autoScrollDone = false
-        delay(1_000)
-        val anchor = topAnchorPx
-        autoScrollDone = true
-        if (anchor != null && anchor > 8f && armedPid == null &&
-            scrollState.value <= 8 && !scrollState.isScrollInProgress
-        ) {
-            scrollState.animateScrollTo(anchor.toInt())
-        }
     }
 
     // The data block's top edge is a gentle snap point: stopping within a thumb's width of it
     // settles exactly on it instead of leaving the gauges half hidden.
-    LaunchedEffect(scrollState, topAnchorPx, autoScrollDone) {
+    LaunchedEffect(scrollState, topAnchorPx) {
         val anchor = topAnchorPx?.toInt() ?: return@LaunchedEffect
-        if (!autoScrollDone) return@LaunchedEffect
         snapshotFlow { scrollState.isScrollInProgress }
             .filter { !it }
             .collect {
@@ -255,6 +254,10 @@ fun DashboardScreen(
     }
 
     val ready = connection as? ConnectionState.Ready
+    // The cluster gauges are square, so a landscape phone (where half the width is wider than
+    // the whole viewport is tall) would draw a dial taller than the screen. Cap the dial to a
+    // share of the viewport height so the whole sweep stays visible in both orientations.
+    val gaugeMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
     val rpmPid = PidCatalog.find(0x0C)!!
     val speedPid = PidCatalog.find(0x0D)!!
     val loadPid = PidCatalog.find(0x04)!!
@@ -282,7 +285,7 @@ fun DashboardScreen(
                 )
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    text = identity.displayName,
+                    text = vehicleName,
                     style = MaterialTheme.typography.headlineSmall,
                     color = MaterialTheme.colorScheme.onBackground,
                 )
@@ -407,31 +410,40 @@ fun DashboardScreen(
                         ),
                     ) {
                         Column(Modifier.padding(horizontal = 8.dp, vertical = 14.dp)) {
-                            Row(Modifier.fillMaxWidth()) {
-                                RadialGauge(
-                                    value = rpm,
-                                    min = 0.0,
-                                    max = 8000.0,
-                                    label = "Engine speed",
-                                    unit = "rpm",
-                                    accent = Volt,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable { detailPid = rpmPid },
-                                    redline = 0.86f,
-                                )
-                                RadialGauge(
-                                    value = speedDisplay.value,
-                                    min = 0.0,
-                                    max = maxSpeed,
-                                    label = "Vehicle speed",
-                                    unit = speedDisplay.unit,
-                                    accent = Ice,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable { detailPid = speedPid },
-                                    redline = 0.94f,
-                                )
+                            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                                val dialSize = minOf(maxWidth / 2 - 4.dp, gaugeMaxHeight)
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(
+                                        8.dp,
+                                        Alignment.CenterHorizontally,
+                                    ),
+                                ) {
+                                    RadialGauge(
+                                        value = rpm,
+                                        min = 0.0,
+                                        max = 8000.0,
+                                        label = "Engine speed",
+                                        unit = "rpm",
+                                        accent = Volt,
+                                        modifier = Modifier
+                                            .size(dialSize)
+                                            .clickable { detailPid = rpmPid },
+                                        redline = 0.86f,
+                                    )
+                                    RadialGauge(
+                                        value = speedDisplay.value,
+                                        min = 0.0,
+                                        max = maxSpeed,
+                                        label = "Vehicle speed",
+                                        unit = speedDisplay.unit,
+                                        accent = Ice,
+                                        modifier = Modifier
+                                            .size(dialSize)
+                                            .clickable { detailPid = speedPid },
+                                        redline = 0.94f,
+                                    )
+                                }
                             }
                             Spacer(Modifier.height(4.dp))
                             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f))
@@ -486,7 +498,7 @@ fun DashboardScreen(
                             color = stalker.muted,
                         )
                         Spacer(Modifier.height(14.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        ActionRow(spacing = 10.dp) {
                             Button(
                                 onClick = onOpenConnect,
                                 colors = ButtonDefaults.buttonColors(
@@ -727,6 +739,7 @@ fun DashboardScreen(
             calibrationId = identity.calibrationId,
             cvn = identity.cvn,
             ecuName = identity.ecuName,
+            nickname = settings.vehicleProfiles[settings.profileVehicleKey]?.nickname,
             protocol = ready?.adapter?.protocolName,
             adapter = ready?.adapter?.identifier,
             voltage = live.adapterVoltage ?: ready?.adapter?.voltage,
@@ -862,6 +875,7 @@ private fun VehicleCard(
     calibrationId: String?,
     cvn: List<String>,
     ecuName: String?,
+    nickname: String?,
     protocol: String?,
     adapter: String?,
     voltage: Double?,
@@ -871,6 +885,10 @@ private fun VehicleCard(
     val clipboard = LocalClipboardManager.current
     StalkerCard {
         Column {
+            nickname?.takeIf { it.isNotBlank() }?.let {
+                InfoLine("Vehicle name", it)
+                Spacer(Modifier.height(6.dp))
+            }
             if (vin != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -901,6 +919,14 @@ private fun VehicleCard(
                 Spacer(Modifier.height(10.dp))
             } else if (protocol != null) {
                 InfoLine("VIN", "Not reported by this ECU")
+                if (nickname.isNullOrBlank()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "No VIN was reported. Name this car in Settings → Your car; the name is stored against its ECU fingerprint.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = stalker.muted,
+                    )
+                }
             } else {
                 Text(
                     "Vehicle identity is read when the adapter connects.",
@@ -999,7 +1025,8 @@ private fun PidDetailSheet(
     val throttleNote = when (pid.id) {
         0x11, 0x45, 0x47, 0x48 ->
             "Some ECUs report the throttle plate or valve here rather than pedal travel. " +
-                "Compare with Accelerator pedal D/E (0x49/0x4A) before diagnosing a sensor."
+                "Compare with Pedal (0x49) and Pedal 2 (0x4A), or run Find my throttle & pedal " +
+                "channels in the parameter picker before diagnosing a sensor."
         else -> null
     }
 

@@ -46,6 +46,8 @@ class CustomPidTest {
         assertEquals(-1, adapter.id)
         assertEquals("V", adapter.unit)
         assertEquals("Battery", adapter.shortName)
+        // It is a built-in measurement, not a user-defined PID.
+        assertEquals(false, adapter.isCustom)
 
         // Real PID 42 stays a normal, selectable OBD parameter.
         val moduleVoltage = dashboardParam(0x42)!!

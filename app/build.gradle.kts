@@ -22,8 +22,8 @@ android {
         targetSdk = 36
         // Semantic versioning: major * 10000 + minor * 100 + patch.
         // versionCode must only ever increase.
-        versionCode = 105
-        versionName = "0.4.0"
+        versionCode = 107
+        versionName = "0.5.0"
         buildConfigField("String", "RELEASE_CHANNEL", "\"beta\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

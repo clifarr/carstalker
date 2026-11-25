@@ -13,6 +13,7 @@ import com.carstalker.app.data.AppSettings
 import com.carstalker.app.data.CustomPid
 import com.carstalker.app.data.GuidedResultExport
 import com.carstalker.app.data.LogSession
+import com.carstalker.app.data.PedalCalibration
 import com.carstalker.app.data.PdfPreview
 import com.carstalker.app.data.PdfPrinter
 import com.carstalker.app.data.ReportBuilder
@@ -42,6 +43,7 @@ import com.carstalker.core.guided.BaselineSnapshot
 import com.carstalker.core.guided.BaselineExtractor
 import com.carstalker.core.diagnose.CaptureData
 import com.carstalker.core.diagnose.CaptureProgress
+import com.carstalker.core.diagnose.CaptureSpec
 import com.carstalker.core.diagnose.CatalystAnswers
 import com.carstalker.core.diagnose.CatalystInput
 import com.carstalker.core.diagnose.CatalystWizard
@@ -56,6 +58,9 @@ import com.carstalker.core.guided.StageCapture
 import com.carstalker.core.guided.VehicleCapabilities
 import com.carstalker.core.guided.VehicleProfile
 import com.carstalker.core.elm.AdapterBenchmark
+import com.carstalker.core.obd.PedalChannelCheck
+import com.carstalker.core.obd.PedalChannelResult
+import com.carstalker.core.obd.PidCatalog
 import com.carstalker.core.obd.UnitSystem
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,6 +76,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import java.io.File
+
+/** State of the interactive throttle/pedal channel finder. */
+data class PedalCheckUiState(
+    val running: Boolean = false,
+    val progress: Float = 0f,
+    val result: PedalChannelResult? = null,
+    val error: String? = null,
+)
 
 class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
@@ -128,6 +141,10 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
     private val _captureProgress = MutableStateFlow<CaptureProgress?>(null)
     val captureProgress: StateFlow<CaptureProgress?> = _captureProgress.asStateFlow()
+
+    private val _pedalCheck = MutableStateFlow<PedalCheckUiState?>(null)
+    val pedalCheck: StateFlow<PedalCheckUiState?> = _pedalCheck.asStateFlow()
+    private var pedalCheckJob: kotlinx.coroutines.Job? = null
 
     private val _wizardResult = MutableStateFlow<WizardResult?>(null)
     val wizardResult: StateFlow<WizardResult?> = _wizardResult.asStateFlow()
@@ -323,6 +340,114 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun runBenchmark() {
         viewModelScope.launch { _benchmark.value = graph.session.benchmarkAdapter() }
+    }
+
+    // ---- Throttle / pedal channel finder ---------------------------------
+
+    /**
+     * Samples the throttle-plate and accelerator-pedal channels while the driver presses the
+     * pedal, then recommends the ones that actually moved. No model database is involved.
+     */
+    fun startPedalChannelCheck() {
+        if (connection.value !is ConnectionState.Ready) {
+            _pedalCheck.value = PedalCheckUiState(error = "Connect the adapter before running this check.")
+            return
+        }
+        pedalCheckJob?.cancel()
+        pedalCheckJob = viewModelScope.launch {
+            _pedalCheck.value = PedalCheckUiState(running = true)
+            try {
+                val capture = graph.session.capture(
+                    CaptureSpec(
+                        id = "pedal-channels",
+                        title = "Throttle & pedal channels",
+                        pids = PedalChannelCheck.CANDIDATE_PIDS,
+                        durationMs = PedalChannelCheck.DURATION_MS,
+                    ),
+                ) { progress ->
+                    _pedalCheck.update { state -> state?.copy(running = true, progress = progress.fraction) }
+                }
+                if (connection.value !is ConnectionState.Ready) {
+                    _pedalCheck.value = PedalCheckUiState(
+                        error = "The adapter disconnected during the check. Reconnect and run it again.",
+                    )
+                    return@launch
+                }
+                _pedalCheck.value = PedalCheckUiState(result = PedalChannelCheck.analyze(capture))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                _pedalCheck.value = PedalCheckUiState(
+                    error = t.message?.takeIf { it.isNotBlank() } ?: "The pedal check could not finish.",
+                )
+            }
+        }
+    }
+
+    fun dismissPedalChannelCheck() {
+        pedalCheckJob?.cancel()
+        pedalCheckJob = null
+        _pedalCheck.value = null
+    }
+
+    /**
+     * Applies a recommended channel to the active dashboard. A throttle-plate channel that was
+     * on the dashboard and did not move is replaced, so the card count does not grow.
+     */
+    fun usePedalChannel(pidId: Int) {
+        val supported = supportedPids.value
+        val active = settings.value.activeDashboard
+        val base = if (active.automatic) recommendedDashboardPids(supported) else active.pids
+        val shortName = PidCatalog.find(pidId)?.shortName ?: "Pedal"
+        val result = _pedalCheck.value?.result
+        val reading = result?.readings?.firstOrNull { it.pidId == pidId }
+        val vehicleKey = settings.value.profileVehicleKey
+        val calibration = reading
+            ?.takeIf { it.calibrationSpan >= PedalChannelCheck.MOVEMENT_THRESHOLD_PERCENT }
+            ?.let { PedalCalibration(pidId, it.releasedValue, it.pressedValue, vehicleKey) }
+        fun withCalibration(current: AppSettings): AppSettings = if (calibration == null) {
+            current
+        } else {
+            current.copy(
+                pedalCalibrations = current.pedalCalibrations.filterNot {
+                    it.pidId == pidId && it.vehicleKey == calibration.vehicleKey
+                } + calibration,
+            )
+        }
+        if (pidId in base) {
+            // A second run of the finder should still refresh the calibration of a channel
+            // that is already on the dashboard.
+            if (calibration != null) updateSettings(::withCalibration)
+            viewModelScope.launch { _messages.emit("$shortName is already on the dashboard") }
+            return
+        }
+        val replacePid = PedalChannelCheck.staticThrottlePlateOn(base, result)
+        val updated = PedalChannelCheck.applyToDashboard(
+            base = base,
+            pidId = pidId,
+            replacePid = replacePid,
+            max = MAX_DASHBOARD_PIDS,
+        )
+        if (updated == null) {
+            viewModelScope.launch {
+                _messages.emit("A dashboard can show up to $MAX_DASHBOARD_PIDS values. Remove one first.")
+            }
+            return
+        }
+        updateSettings { current ->
+            withCalibration(current).copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == active.id) it.copy(pids = updated, automatic = false) else it
+                },
+            )
+        }
+        val replaced = replacePid?.let { PidCatalog.find(it)?.shortName }
+        val message = if (replaced != null) {
+            "$shortName replaced $replaced on the dashboard"
+        } else {
+            "$shortName added to the dashboard"
+        }
+        viewModelScope.launch { _messages.emit(message) }
     }
 
     // ---- Guided diagnostics ----------------------------------------------
@@ -643,6 +768,11 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         if (recording.value) graph.session.stopRecording() else graph.session.startRecording()
     }
 
+    /** Re-posts the foreground notification after the user grants notification permission. */
+    fun refreshRecordingNotification() {
+        if (recording.value) graph.session.refreshRecordingNotification()
+    }
+
     // ---- Settings ---------------------------------------------------------
 
     fun setUnitSystem(system: UnitSystem) = updateSettings { it.copy(unitSystem = system) }
@@ -653,6 +783,9 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun setKeepScreenOn(enabled: Boolean) = updateSettings { it.copy(keepScreenOn = enabled) }
 
+    fun setPedalCalibrationEnabled(enabled: Boolean) =
+        updateSettings { it.copy(pedalCalibrationEnabled = enabled) }
+
     fun setTransport(kind: TransportKind) = updateSettings { it.copy(lastTransport = kind) }
 
     fun setUsbBaud(baud: Int) = updateSettings { it.copy(usbBaud = baud) }
@@ -661,26 +794,48 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun setFuelType(fuelType: FuelType) = updateSettings { current ->
         val key = current.profileVehicleKey
+        val existing = current.vehicleProfiles[key]
         current.copy(
             fuelType = fuelType,
             vehicleProfiles = if (key.isBlank()) {
                 current.vehicleProfiles
             } else {
-                current.vehicleProfiles + (key to VehicleProfileEntry(fuelType, current.aspiration))
+                current.vehicleProfiles + (
+                    key to VehicleProfileEntry(fuelType, current.aspiration, existing?.nickname)
+                )
             },
         )
     }
 
     fun setAspiration(aspiration: Aspiration) = updateSettings { current ->
         val key = current.profileVehicleKey
+        val existing = current.vehicleProfiles[key]
         current.copy(
             aspiration = aspiration,
             vehicleProfiles = if (key.isBlank()) {
                 current.vehicleProfiles
             } else {
-                current.vehicleProfiles + (key to VehicleProfileEntry(current.fuelType, aspiration))
+                current.vehicleProfiles + (
+                    key to VehicleProfileEntry(current.fuelType, aspiration, existing?.nickname)
+                )
             },
         )
+    }
+
+    /** Names the current car. Stored against its VIN/calibration/fingerprint profile. */
+    fun setVehicleNickname(name: String) {
+        val trimmed = name.trim().take(32)
+        updateSettings { current ->
+            val key = current.profileVehicleKey
+            if (key.isBlank()) return@updateSettings current
+            val existing = current.vehicleProfiles[key]
+                ?: VehicleProfileEntry(current.fuelType, current.aspiration)
+            current.copy(
+                vehicleProfiles = current.vehicleProfiles + (
+                    key to existing.copy(nickname = trimmed.ifBlank { null })
+                ),
+            )
+        }
     }
 
     /**
@@ -851,18 +1006,22 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
             if (current.profileVehicleKey == vehicleKey) return@updateSettings current
             val stored = current.vehicleProfiles[vehicleKey]
             // A profile entered before the first connection belongs to the first car seen.
-            val fallback = if (stored == null && current.profileVehicleKey == "unknown") {
-                VehicleProfileEntry(current.fuelType, current.aspiration)
+            val preConnection = if (current.profileVehicleKey == "unknown") {
+                current.vehicleProfiles["unknown"]
             } else {
                 null
             }
-            val effective = stored ?: fallback
+            val base = stored ?: preConnection?.let {
+                VehicleProfileEntry(current.fuelType, current.aspiration)
+            }
+            // A name typed before connecting survives even if this car already has a profile.
+            val effective = base?.copy(nickname = base.nickname ?: preConnection?.nickname)
             current.copy(
                 profileVehicleKey = vehicleKey,
                 fuelType = effective?.fuelType ?: FuelType.UNKNOWN,
                 aspiration = effective?.aspiration ?: Aspiration.UNKNOWN,
-                vehicleProfiles = if (fallback != null) {
-                    current.vehicleProfiles + (vehicleKey to fallback)
+                vehicleProfiles = if (effective != null && effective != stored) {
+                    current.vehicleProfiles + (vehicleKey to effective)
                 } else {
                     current.vehicleProfiles
                 },
