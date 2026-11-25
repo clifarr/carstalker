@@ -12,6 +12,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,9 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.ChevronRight
-import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Usb
-import androidx.compose.material.icons.rounded.VideoLibrary
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
@@ -92,8 +91,6 @@ import com.carstalker.core.elm.AdapterBenchmark
 fun ConnectScreen(
     viewModel: CarStalkerViewModel,
     onOpenDashboard: () -> Unit,
-    onOpenLogs: () -> Unit,
-    onOpenSettings: () -> Unit,
 ) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val connection by viewModel.connection.collectAsStateWithLifecycle()
@@ -189,36 +186,6 @@ fun ConnectScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         color = stalker.muted,
                     )
-                }
-            }
-
-            if (!connected) {
-                Spacer(Modifier.height(14.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(
-                        onClick = onOpenLogs,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(
-                            Icons.Rounded.VideoLibrary,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Recordings")
-                    }
-                    OutlinedButton(
-                        onClick = onOpenSettings,
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(
-                            Icons.Rounded.Settings,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Settings")
-                    }
                 }
             }
 
@@ -322,16 +289,50 @@ fun ConnectScreen(
                         )
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            error.message,
+                            connectionRemedy(transport),
                             style = MaterialTheme.typography.bodySmall,
-                            color = stalker.muted,
+                            color = MaterialTheme.colorScheme.onSurface,
                         )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Check that the ignition is on and the adapter is paired, then try again.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = stalker.muted,
-                        )
+                        Spacer(Modifier.height(6.dp))
+                        var showDetail by remember { mutableStateOf(false) }
+                        TextButton(
+                            onClick = { showDetail = !showDetail },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        ) {
+                            Text(
+                                if (showDetail) "Hide technical detail" else "Technical detail",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = stalker.muted,
+                            )
+                        }
+                        if (showDetail) {
+                            Text(
+                                error.message,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.muted,
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    when (transport) {
+                                        TransportKind.DEMO -> viewModel.connectDemo()
+                                        TransportKind.TCP -> {
+                                            val port = tcpPort.toIntOrNull() ?: settings.tcpPort
+                                            viewModel.connectTcp(tcpHost.trim(), port)
+                                        }
+                                        TransportKind.USB -> viewModel.refreshUsbDevices()
+                                        TransportKind.BLE -> {
+                                            if (permissionGranted) viewModel.startBleScan()
+                                            else permissionLauncher.launch(blePermissions())
+                                        }
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Carbon),
+                            ) { Text("Retry") }
+                            OutlinedButton(onClick = { transportOverride = null }) { Text("Change adapter") }
+                        }
                     }
                 }
             }
@@ -353,11 +354,6 @@ fun ConnectScreen(
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
-                        Icon(
-                            Icons.Rounded.ChevronRight,
-                            contentDescription = null,
-                            tint = stalker.muted,
-                        )
                     }
                 }
             }
@@ -576,8 +572,13 @@ private fun TransportOption(
     onClick: () -> Unit,
 ) {
     Surface(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 44.dp),
+        modifier = modifier
+            .heightIn(min = 44.dp)
+            .selectable(
+                selected = selected,
+                role = androidx.compose.ui.semantics.Role.RadioButton,
+                onClick = onClick,
+            ),
         shape = RoundedCornerShape(16.dp),
         color = if (selected) accent else Color.Transparent,
     ) {
@@ -598,7 +599,7 @@ private fun TransportOption(
                 Spacer(Modifier.width(6.dp))
             }
             Text(
-                text = label,
+                text = if (selected) "✓ $label" else label,
                 style = MaterialTheme.typography.labelMedium,
                 color = if (selected) Carbon else muted,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
@@ -757,7 +758,7 @@ private fun ClassicPane(
                     if (discovering) {
                         "Looking for compatible adapters. Keep the dongle powered and in range."
                     } else {
-                        "Pair your ELM327 dongle in Android Bluetooth settings, then tap Scan. Only serial-profile OBD adapters are listed."
+                        "1. Plug the adapter into the OBD-II port. 2. Turn the ignition on. 3. Pair it in Android Bluetooth settings, then tap Scan. Most inexpensive ELM327 adapters use Bluetooth Classic."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = stalker.muted,
@@ -1146,11 +1147,16 @@ private fun TcpPane(
                 color = stalker.muted,
             )
             Spacer(Modifier.height(16.dp))
+            val hostValid = host.isNotBlank() && !host.any { it.isWhitespace() }
+            val portValue = port.toIntOrNull()
+            val portValid = portValue != null && portValue in 1..65535
             OutlinedTextField(
                 value = host,
                 onValueChange = onHostChange,
                 label = { Text("Host") },
                 singleLine = true,
+                isError = host.isNotBlank() && !hostValid,
+                supportingText = { if (host.isNotBlank() && !hostValid) Text("Enter a hostname or IP address without spaces") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1160,12 +1166,15 @@ private fun TcpPane(
                 onValueChange = onPortChange,
                 label = { Text("Port") },
                 singleLine = true,
+                isError = port.isNotBlank() && !portValid,
+                supportingText = { if (port.isNotBlank() && !portValid) Text("Enter a port from 1 to 65535") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = onConnect,
+                enabled = hostValid && portValid,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Carbon),
             ) {
@@ -1216,3 +1225,14 @@ private fun hasBlePermissions(context: android.content.Context): Boolean =
     blePermissions().all {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }
+
+private fun connectionRemedy(transport: TransportKind): String = when (transport) {
+    TransportKind.BLE ->
+        "Check that the adapter is paired, the ignition is on, and that no other phone is connected to it. Most inexpensive ELM327 adapters use Bluetooth Classic."
+    TransportKind.USB ->
+        "Check the OTG cable and that the adapter is powered. Supported serial chipsets are FTDI, CH340, CP210x, PL2303 and CDC-ACM."
+    TransportKind.TCP ->
+        "Join the adapter's Wi-Fi network first, then check the host and port. The phone must be on the adapter's network, not your home Wi-Fi."
+    TransportKind.DEMO ->
+        "The simulator could not start. Try again; if it keeps failing, restart the app."
+}

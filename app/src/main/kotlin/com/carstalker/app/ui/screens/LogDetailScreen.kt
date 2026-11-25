@@ -4,6 +4,13 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -24,16 +31,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DeleteOutline
-import androidx.compose.material.icons.rounded.Pause
-import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Replay
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -53,27 +55,32 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.carstalker.app.data.LogPlaybackParser
 import com.carstalker.app.data.LogSession
 import com.carstalker.app.data.PlaybackData
+import com.carstalker.app.data.PlaybackPoint
 import com.carstalker.app.data.PlaybackSeries
+import com.carstalker.app.ui.components.ChartWindow
 import com.carstalker.app.ui.components.EmptyState
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.theme.LocalStalkerColors
 import com.carstalker.app.ui.theme.NumericStyle
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
-
-private val PLAYBACK_SPEEDS = listOf(0.5f, 1f, 2f, 4f)
 
 @Composable
 fun LogDetailScreen(
@@ -87,10 +94,10 @@ fun LogDetailScreen(
 
     var data by remember(session.meta.id) { mutableStateOf<PlaybackData?>(null) }
     var position by remember { mutableStateOf(0L) }
-    var playing by remember { mutableStateOf(false) }
-    var speed by remember { mutableStateOf(1f) }
     var selectedKey by remember { mutableStateOf<String?>(null) }
+    var compareAll by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var window by remember { mutableStateOf(ChartWindow.full(0L, 1L)) }
 
     LaunchedEffect(session.meta.id) {
         data = withContext(Dispatchers.IO) {
@@ -103,17 +110,7 @@ fun LogDetailScreen(
         val loaded = data ?: return@LaunchedEffect
         position = loaded.startMs
         selectedKey = loaded.series.firstOrNull()?.key
-        playing = false
-    }
-
-    LaunchedEffect(playing, speed, data) {
-        val loaded = data ?: return@LaunchedEffect
-        while (playing) {
-            delay(50)
-            val next = position + (50 * speed).toLong()
-            position = next.coerceAtMost(loaded.endMs)
-            if (position >= loaded.endMs) playing = false
-        }
+        window = ChartWindow.full(loaded.startMs, loaded.endMs)
     }
 
     BackHandler(onBack = onBack)
@@ -153,6 +150,14 @@ fun LogDetailScreen(
                 append(session.meta.rows)
                 append(" samples")
                 session.meta.vin?.let { append(" · VIN ${it.takeLast(6)}") }
+                if (session.meta.isDemo) append(" · demo data")
+                append(
+                    if (session.meta.kind == "guided") {
+                        " · Guided · ${session.meta.label ?: "capture"}"
+                    } else {
+                        " · Drive recording"
+                    },
+                )
             },
             style = MaterialTheme.typography.bodySmall,
             color = stalker.muted,
@@ -208,6 +213,10 @@ fun LogDetailScreen(
                     ?: playback.series.first()
                 val elapsed = (position - playback.startMs).coerceAtLeast(0L)
                 val duration = playback.durationMs
+                val fullWindow = remember(playback.startMs, playback.endMs) {
+                    ChartWindow.full(playback.startMs, playback.endMs)
+                }
+                val zoomed = window.isZoomed(playback.startMs, playback.endMs)
 
                 Surface(
                     shape = RoundedCornerShape(24.dp),
@@ -216,27 +225,94 @@ fun LogDetailScreen(
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         PlaybackChart(
-                            series = playback.series,
-                            startMs = playback.startMs,
-                            endMs = playback.endMs,
+                            series = if (compareAll) playback.series else listOf(selectedSeries),
+                            window = window,
                             positionMs = position,
                             selectedKey = selectedSeries.key,
                             colors = colors,
-                            modifier = Modifier.fillMaxWidth().height(210.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(210.dp)
+                                .semantics { contentDescription = "Playback chart" }
+                                .pointerInput(playback.startMs, playback.endMs) {
+                                    detectChartTransformGestures(
+                                        isZoomed = { window.isZoomed(playback.startMs, playback.endMs) },
+                                        onTransform = { centroidFraction, panFraction, zoom ->
+                                            window = window.transformed(
+                                                fullStartMs = playback.startMs,
+                                                fullEndMs = playback.endMs,
+                                                centroidFraction = centroidFraction,
+                                                panFraction = panFraction,
+                                                zoom = zoom,
+                                            )
+                                        },
+                                    )
+                                }
+                                .pointerInput(playback.startMs, playback.endMs) {
+                                    detectTapGestures(
+                                        onDoubleTap = { window = fullWindow },
+                                    )
+                                },
                         )
                         Spacer(Modifier.height(8.dp))
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(formatClock(elapsed), style = MaterialTheme.typography.labelSmall, color = stalker.muted)
-                            Text(formatClock(duration), style = MaterialTheme.typography.labelSmall, color = stalker.muted)
+                            Text(
+                                formatClock((window.startMs - playback.startMs).coerceAtLeast(0L)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.muted,
+                            )
+                            TextButton(
+                                onClick = { compareAll = !compareAll },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp),
+                            ) {
+                                Text(
+                                    if (compareAll) "Single series" else "Compare all",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stalker.accentSecondary,
+                                )
+                            }
+                            Text(
+                                formatClock((window.endMs - playback.startMs).coerceAtLeast(0L)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.muted,
+                            )
+                        }
+                        if (compareAll) {
+                            Text(
+                                "Each series is scaled to the zoomed window; units differ. Select one series for an exact reading.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.warning,
+                            )
+                        }
+                        if (zoomed) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "Zoomed · ${formatClock(window.durationMs)} visible",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stalker.accentSecondary,
+                                )
+                                Spacer(Modifier.weight(1f))
+                                TextButton(onClick = { window = fullWindow }) {
+                                    Text("Reset zoom", color = stalker.accent)
+                                }
+                            }
                         }
                         Slider(
                             value = elapsed.toFloat().coerceIn(0f, duration.toFloat().coerceAtLeast(1f)),
                             onValueChange = {
-                                playing = false
-                                position = (playback.startMs + it.toLong()).coerceIn(playback.startMs, playback.endMs)
+                                val next = (playback.startMs + it.toLong()).coerceIn(playback.startMs, playback.endMs)
+                                position = next
+                                // Keep the playhead visible when the slider moves outside the window.
+                                if (next < window.startMs || next > window.endMs) {
+                                    window = window.centeredOn(next, playback.startMs, playback.endMs)
+                                }
                             },
                             valueRange = 0f..duration.toFloat().coerceAtLeast(1f),
                             colors = SliderDefaults.colors(
@@ -245,45 +321,11 @@ fun LogDetailScreen(
                                 inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
                             ),
                         )
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            IconButton(onClick = { playing = false; position = playback.startMs }) {
-                                Icon(Icons.Rounded.Replay, contentDescription = "Back to start", tint = stalker.muted)
-                            }
-                            Spacer(Modifier.weight(1f))
-                            FilledIconButton(
-                                onClick = {
-                                    if (!playing && position >= playback.endMs) position = playback.startMs
-                                    playing = !playing
-                                },
-                                modifier = Modifier.size(58.dp),
-                                colors = IconButtonDefaults.filledIconButtonColors(
-                                    containerColor = stalker.accent,
-                                    contentColor = Color.Black,
-                                ),
-                            ) {
-                                Icon(
-                                    imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                                    contentDescription = if (playing) "Pause" else "Play",
-                                    modifier = Modifier.size(30.dp),
-                                )
-                            }
-                            Spacer(Modifier.weight(1f))
-                            TextButton(
-                                onClick = {
-                                    val index = PLAYBACK_SPEEDS.indexOf(speed).coerceAtLeast(0)
-                                    speed = PLAYBACK_SPEEDS[(index + 1) % PLAYBACK_SPEEDS.size]
-                                },
-                            ) {
-                                Text(
-                                    "${formatSpeed(speed)}×",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = stalker.accent,
-                                )
-                            }
-                        }
+                        Text(
+                            "Pinch the chart to zoom, drag it to pan, double-tap to reset.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = stalker.muted,
+                        )
                     }
                 }
 
@@ -395,7 +437,7 @@ fun LogDetailScreen(
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text("Delete this recording?") },
-            text = { Text("The CSV file and its metadata will be removed from this device.") },
+            text = { Text("The CSV file and its metadata will be removed from this device. This cannot be undone.") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -414,8 +456,7 @@ fun LogDetailScreen(
 @Composable
 private fun PlaybackChart(
     series: List<PlaybackSeries>,
-    startMs: Long,
-    endMs: Long,
+    window: ChartWindow,
     positionMs: Long,
     selectedKey: String?,
     colors: Map<String, Color>,
@@ -428,10 +469,11 @@ private fun PlaybackChart(
         val padding = 8f
         val chartWidth = size.width
         val chartHeight = size.height
-        val duration = (endMs - startMs).coerceAtLeast(1L).toFloat()
+        val duration = window.durationMs.toFloat()
+        val usableHeight = chartHeight - padding * 2
 
         for (line in 0..3) {
-            val y = padding + (chartHeight - padding * 2) * line / 3f
+            val y = padding + usableHeight * line / 3f
             drawLine(
                 color = grid,
                 start = Offset(0f, y),
@@ -440,12 +482,7 @@ private fun PlaybackChart(
             )
         }
 
-        fun xFor(timeMs: Long): Float = ((timeMs - startMs) / duration) * chartWidth
-
-        fun yFor(value: Double, series: PlaybackSeries): Float {
-            val normalized = ((value - series.rangeMin) / (series.rangeMax - series.rangeMin)).coerceIn(0.0, 1.0)
-            return (chartHeight - padding - normalized * (chartHeight - padding * 2)).toFloat()
-        }
+        fun xFor(timeMs: Long): Float = ((timeMs - window.startMs) / duration) * chartWidth
 
         // Draw unselected series first, then the highlighted one.
         series.sortedBy { it.key == selectedKey }.forEach { item ->
@@ -454,60 +491,167 @@ private fun PlaybackChart(
             val points = item.points
             if (points.isEmpty()) return@forEach
 
-            if (points.size == 1) {
-                drawCircle(
-                    color = color.copy(alpha = if (selected) 1f else 0.4f),
-                    radius = if (selected) 4f else 2.5f,
-                    center = Offset(xFor(points[0].timeMs), yFor(points[0].value, item)),
-                )
-                return@forEach
+            val firstVisible = points.firstAtOrAfter(window.startMs)
+            val lastVisible = points.lastAtOrBefore(window.endMs)
+            if (firstVisible > lastVisible) return@forEach
+
+            // The vertical scale follows the visible window, so zooming in reveals detail
+            // instead of flattening the line against the whole-recording range.
+            var low = Double.MAX_VALUE
+            var high = -Double.MAX_VALUE
+            for (index in firstVisible..lastVisible) {
+                val value = points[index].value
+                if (value < low) low = value
+                if (value > high) high = value
+            }
+            // A flat line is centred instead of being pinned to the bottom edge.
+            val range = high - low
+            val base = if (range > 1e-9) low else low - 0.5
+            val span = if (range > 1e-9) range else 1.0
+
+            fun yFor(value: Double): Float {
+                val normalized = ((value - base) / span).coerceIn(0.0, 1.0)
+                return (chartHeight - padding - normalized * usableHeight).toFloat()
             }
 
-            val step = (points.size / 600).coerceAtLeast(1)
-            val path = Path()
-            var first = true
-            var index = 0
-            while (index < points.size) {
-                val point = points[index]
-                val x = xFor(point.timeMs)
-                val y = yFor(point.value, item)
-                if (first) {
-                    path.moveTo(x, y)
-                    first = false
+            // One neighbour on each side keeps the line continuous at the window edges.
+            val drawFirst = (firstVisible - 1).coerceAtLeast(0)
+            val drawLast = (lastVisible + 1).coerceAtMost(points.lastIndex)
+            clipRect(0f, 0f, chartWidth, chartHeight) {
+                if (drawFirst == drawLast) {
+                    drawCircle(
+                        color = color.copy(alpha = if (selected) 1f else 0.4f),
+                        radius = if (selected) 4f else 2.5f,
+                        center = Offset(xFor(points[drawFirst].timeMs), yFor(points[drawFirst].value)),
+                    )
                 } else {
-                    path.lineTo(x, y)
+                    val step = ((drawLast - drawFirst + 1) / 600).coerceAtLeast(1)
+                    val path = Path()
+                    var first = true
+                    var index = drawFirst
+                    while (index <= drawLast) {
+                        val point = points[index]
+                        val x = xFor(point.timeMs)
+                        val y = yFor(point.value)
+                        if (first) {
+                            path.moveTo(x, y)
+                            first = false
+                        } else {
+                            path.lineTo(x, y)
+                        }
+                        index += step
+                    }
+                    val last = points[drawLast]
+                    path.lineTo(xFor(last.timeMs), yFor(last.value))
+
+                    drawPath(
+                        path = path,
+                        color = color.copy(alpha = if (selected) 1f else 0.25f),
+                        style = Stroke(
+                            width = if (selected) 3f else 1.6f,
+                            cap = StrokeCap.Round,
+                        ),
+                    )
                 }
-                index += step
-            }
-            val last = points.last()
-            path.lineTo(xFor(last.timeMs), yFor(last.value, item))
 
-            drawPath(
-                path = path,
-                color = color.copy(alpha = if (selected) 1f else 0.25f),
-                style = Stroke(
-                    width = if (selected) 3f else 1.6f,
-                    cap = StrokeCap.Round,
-                ),
-            )
-
-            if (selected) {
-                val value = item.valueAt(positionMs) ?: return@forEach
-                val x = xFor(positionMs.coerceIn(startMs, endMs))
-                val y = yFor(value, item)
-                drawCircle(color.copy(alpha = 0.25f), radius = 8f, center = Offset(x, y))
-                drawCircle(color, radius = 4f, center = Offset(x, y))
+                if (selected && positionMs in window.startMs..window.endMs) {
+                    val value = item.valueAt(positionMs) ?: return@clipRect
+                    val x = xFor(positionMs)
+                    val y = yFor(value)
+                    drawCircle(color.copy(alpha = 0.25f), radius = 8f, center = Offset(x, y))
+                    drawCircle(color, radius = 4f, center = Offset(x, y))
+                }
             }
         }
 
-        val playheadX = xFor(positionMs.coerceIn(startMs, endMs))
-        drawLine(
-            color = playhead,
-            start = Offset(playheadX, 0f),
-            end = Offset(playheadX, chartHeight),
-            strokeWidth = 1.5f,
-        )
+        if (positionMs in window.startMs..window.endMs) {
+            val playheadX = xFor(positionMs)
+            drawLine(
+                color = playhead,
+                start = Offset(playheadX, 0f),
+                end = Offset(playheadX, chartHeight),
+                strokeWidth = 1.5f,
+            )
+        }
     }
+}
+
+/**
+ * Like [androidx.compose.foundation.gestures.detectTransformGestures], but the page can still
+ * scroll vertically until the chart is zoomed: a single finger is only claimed once the chart
+ * has something to pan, while two fingers always pinch.
+ */
+private suspend fun PointerInputScope.detectChartTransformGestures(
+    isZoomed: () -> Boolean,
+    onTransform: (centroidFraction: Float, panFraction: Float, zoom: Float) -> Unit,
+) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false)
+        var pastTouchSlop = false
+        var multiTouch = false
+        var accumulatedZoom = 1f
+        var accumulatedPan = Offset.Zero
+        do {
+            val event = awaitPointerEvent()
+            multiTouch = multiTouch || event.changes.count { it.pressed } >= 2
+            if (!multiTouch && !isZoomed()) continue
+
+            val zoomChange = event.calculateZoom()
+            val panChange = event.calculatePan()
+            if (!pastTouchSlop) {
+                accumulatedZoom *= zoomChange
+                accumulatedPan += panChange
+                val centroidSize = event.calculateCentroidSize(useCurrent = false)
+                val zoomMotion = abs(1f - accumulatedZoom) * centroidSize
+                if (zoomMotion > viewConfiguration.touchSlop ||
+                    accumulatedPan.getDistance() > viewConfiguration.touchSlop
+                ) {
+                    pastTouchSlop = true
+                }
+            }
+            if (pastTouchSlop && (zoomChange != 1f || panChange != Offset.Zero)) {
+                val centroid = event.calculateCentroid(useCurrent = false)
+                if (size.width > 0) {
+                    onTransform(centroid.x / size.width, panChange.x / size.width, zoomChange)
+                }
+                event.changes.forEach { change -> if (change.positionChanged()) change.consume() }
+            }
+        } while (event.changes.any { it.pressed })
+    }
+}
+
+/** Index of the first point at or after [timeMs], or [size] when there is none. */
+private fun List<PlaybackPoint>.firstAtOrAfter(timeMs: Long): Int {
+    var low = 0
+    var high = lastIndex
+    var result = size
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid].timeMs >= timeMs) {
+            result = mid
+            high = mid - 1
+        } else {
+            low = mid + 1
+        }
+    }
+    return result
+}
+
+/** Index of the last point at or before [timeMs], or -1 when there is none. */
+private fun List<PlaybackPoint>.lastAtOrBefore(timeMs: Long): Int {
+    var low = 0
+    var high = lastIndex
+    var result = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (this[mid].timeMs <= timeMs) {
+            result = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return result
 }
 
 @Composable
@@ -589,9 +733,6 @@ private fun formatNumber(value: Double): String {
         else -> String.format(Locale.US, "%.2f", value)
     }
 }
-
-private fun formatSpeed(speed: Float): String =
-    if (speed == speed.toInt().toFloat()) speed.toInt().toString() else speed.toString()
 
 private fun formatClock(ms: Long): String {
     val totalSeconds = (ms / 1000).coerceAtLeast(0)

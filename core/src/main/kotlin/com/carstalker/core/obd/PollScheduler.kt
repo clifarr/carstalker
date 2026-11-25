@@ -34,10 +34,19 @@ class PollScheduler(
      * @param requested parameters the dashboard wants
      * @param supported PIDs the ECU advertises; empty means "not known yet"
      * @param exempt parameters that have no support bitmap, such as custom PIDs
+     * @param priority parameter to request on every cycle, used while its detail view is open
      */
-    fun next(requested: List<Int>, supported: Set<Int>, exempt: Set<Int> = emptySet()): List<Int> =
+    fun next(
+        requested: List<Int>,
+        supported: Set<Int>,
+        exempt: Set<Int> = emptySet(),
+        priority: Int? = null,
+    ): List<Int> =
         requested.distinct().filter { id ->
             when {
+                // An open detail view keeps retrying even if the parameter was retired, so a
+                // transient drop cannot leave the enlarged gauge frozen.
+                id == priority -> true
                 id in silent -> false
                 id !in exempt && supported.isNotEmpty() && id !in supported -> false
                 cycle % intervalFor(id) == 0L -> true
@@ -77,11 +86,18 @@ class PollScheduler(
     fun isSilent(pidId: Int): Boolean = pidId in silent
 
     companion object {
-        /** What the driver watches: polled every cycle. PID 42 is here for cranking dips. */
-        val DEFAULT_FAST = setOf(0x0C, 0x0D, 0x42)
+        /**
+         * What the driver watches: polled every cycle. PID 42 is here for cranking dips, and
+         * throttle position is here because a short pedal movement is over before a slow
+         * Bluetooth Classic cycle would sample it again.
+         */
+        val DEFAULT_FAST = setOf(0x0C, 0x0D, 0x11, 0x42)
 
-        /** Changes over seconds: polled every other cycle. */
-        val DEFAULT_MEDIUM = setOf(0x04, 0x05, 0x0F, 0x10, 0x11, 0x2F, 0x5E)
+        /**
+         * Changes over seconds: polled every other cycle. Pedal channels are here so a throttle
+         * comparison is usable even when the ECU reports the throttle plate on PID 0x11.
+         */
+        val DEFAULT_MEDIUM = setOf(0x04, 0x05, 0x0F, 0x10, 0x2F, 0x45, 0x49, 0x4A, 0x5E)
 
         const val DEFAULT_SILENT_LIMIT = 6
     }

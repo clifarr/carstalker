@@ -120,6 +120,68 @@ object RichMixtureAnalyzer {
 
         val idleBank1 = idle?.bank(1)?.stats
         val elevatedBank1 = elevated?.bank(1)?.stats
+        val idleBank2 = idle?.bank(2)?.stats
+        val elevatedBank2 = elevated?.bank(2)?.stats
+        val bank1 = idleBank1 ?: elevatedBank1
+        val bank2 = idleBank2 ?: elevatedBank2
+
+        // Sign-aware preconditions: a rich-mixture finding requires an actual negative trim.
+        // Positive trims are the opposite pattern and must never be described as rich.
+        val negativeBank1 = listOfNotNull(idleBank1, elevatedBank1).any { it.median <= RICH_TRIM_FLAG }
+        val negativeBank2 = listOfNotNull(idleBank2, elevatedBank2).any { it.median <= RICH_TRIM_FLAG }
+        val anyNegative = negativeBank1 || negativeBank2
+        val positivePattern = listOfNotNull(idleBank1, elevatedBank1, idleBank2, elevatedBank2)
+            .any { it.median >= NORMAL_BAND }
+        val allWithinBand = listOfNotNull(idleBank1, elevatedBank1, idleBank2, elevatedBank2)
+            .all { abs(it.median) <= NORMAL_BAND }
+
+        if (!anyNegative) {
+            if (positivePattern) {
+                warnings += "The captured trims are positive. That is a lean-running pattern, not the negative-trim pattern this guide interprets."
+                nextSteps += "Use the lean-mixture guide (P0171/P0174) for positive fuel trims."
+            }
+            val summary = when {
+                allWithinBand -> "No negative fuel-trim pattern was observed. Combined trims stayed inside the configured normal band."
+                positivePattern -> "No negative fuel-trim pattern was observed. The captured trims are positive, which points to a lean-running question instead."
+                else -> "No negative fuel-trim pattern was observed in this capture."
+            }
+            val status = if (input.safetyStopReason != null) {
+                DiagnosticStatus.SAFETY_STOPPED
+            } else if (input.cancelled) {
+                DiagnosticStatus.CANCELLED
+            } else if (allWithinBand) {
+                DiagnosticStatus.NO_ANOMALY_DETECTED
+            } else {
+                DiagnosticStatus.INCONCLUSIVE
+            }
+            val stageSummaries = analyses.map { analysis ->
+                AnalysisSupport.stageSummary(
+                    stage = analysis.stage,
+                    valid = analysis.validTrims,
+                    keyPid = Signals.RPM,
+                    metrics = buildMap {
+                        analysis.bank(1)?.let { put("combined_trim_b1", it.stats.median) }
+                        analysis.bank(2)?.let { put("combined_trim_b2", it.stats.median) }
+                    },
+                )
+            }
+            return AnalysisSupport.buildResult(
+                input = input,
+                status = status,
+                confidence = if (allWithinBand) ResultConfidence.MEDIUM else ResultConfidence.LOW,
+                summary = summary,
+                observations = observations,
+                findings = emptyList(),
+                stages = stageSummaries,
+                quality = quality,
+                warnings = warnings,
+                nextSteps = nextSteps,
+                limitations = listOf(
+                    "This guide interprets negative (rich) fuel trims. It does not test a lean-running fault.",
+                    "Positive trims are reported as a different pattern, not as a clean engine verdict.",
+                ),
+            )
+        }
 
         if (idleBank1 != null && elevatedBank1 != null) {
             val idleValue = idleBank1.median
@@ -127,7 +189,7 @@ object RichMixtureAnalyzer {
             val change = elevatedValue - idleValue
 
             when {
-                idleValue < RICH_TRIM_FLAG && change > TRIM_CHANGE_FLAG -> {
+                idleValue <= RICH_TRIM_FLAG && change > TRIM_CHANGE_FLAG -> {
                     findings += GuidedFinding(
                         id = "idle_rich_bias",
                         title = "Rich bias concentrated at idle",
@@ -150,7 +212,7 @@ object RichMixtureAnalyzer {
                     )
                     nextSteps += "Check the EVAP purge command and injector balance before replacing a sensor."
                 }
-                idleValue < RICH_TRIM_FLAG && elevatedValue < RICH_TRIM_FLAG && abs(change) <= TRIM_CHANGE_FLAG -> {
+                idleValue <= RICH_TRIM_FLAG && elevatedValue <= RICH_TRIM_FLAG && abs(change) <= TRIM_CHANGE_FLAG -> {
                     findings += GuidedFinding(
                         id = "persistent_rich_bias",
                         title = "Persistent negative mixture bias",
@@ -172,7 +234,7 @@ object RichMixtureAnalyzer {
                     )
                     nextSteps += "Check airflow measurement, fuel pressure and EVAP purge before replacing parts."
                 }
-                change < -TRIM_CHANGE_FLAG -> {
+                idleValue <= RICH_TRIM_FLAG && elevatedValue <= RICH_TRIM_FLAG && change < -TRIM_CHANGE_FLAG -> {
                     findings += GuidedFinding(
                         id = "load_rich_bias",
                         title = "Trim becomes richer as airflow rises",
@@ -196,11 +258,9 @@ object RichMixtureAnalyzer {
             }
         }
 
-        val idleBank2 = idle?.bank(2)?.stats
-        val elevatedBank2 = elevated?.bank(2)?.stats
-        val bank1 = idleBank1 ?: elevatedBank1
-        val bank2 = idleBank2 ?: elevatedBank2
-        if (bank1 != null && bank2 != null && abs(bank1.median - bank2.median) > TRIM_CHANGE_FLAG) {
+        if (bank1 != null && bank2 != null && (bank1.median <= RICH_TRIM_FLAG || bank2.median <= RICH_TRIM_FLAG) &&
+            abs(bank1.median - bank2.median) > TRIM_CHANGE_FLAG
+        ) {
             findings += GuidedFinding(
                 id = "bank_specific_rich",
                 title = "One bank is correcting more than the other",
@@ -224,7 +284,7 @@ object RichMixtureAnalyzer {
         }
 
         val upstream = idle?.upstreamO2 ?: elevated?.upstreamO2
-        if (upstream != null && upstream.median > 0.75) {
+        if (upstream != null && upstream.median > 0.75 && anyNegative) {
             findings += GuidedFinding(
                 id = "o2_rich_feedback",
                 title = "Upstream O2 feedback sits on the rich side",
@@ -237,24 +297,24 @@ object RichMixtureAnalyzer {
             )
         }
 
-        val normal = findings.isEmpty() &&
-            idle?.validTrims == true &&
-            elevated?.validTrims == true &&
-            listOfNotNull(idleBank1, elevatedBank1).all { abs(it.median) <= NORMAL_BAND }
-
         val status = when {
             input.safetyStopReason != null -> DiagnosticStatus.SAFETY_STOPPED
             input.cancelled -> DiagnosticStatus.CANCELLED
-            normal -> DiagnosticStatus.NO_ANOMALY_DETECTED
             findings.isNotEmpty() -> DiagnosticStatus.SUSPICIOUS
             else -> DiagnosticStatus.INCONCLUSIVE
         }
         val summary = when (status) {
             DiagnosticStatus.NO_ANOMALY_DETECTED -> "Fuel trims stayed within the configured normal band at both stages."
-            DiagnosticStatus.SUSPICIOUS -> "Negative fuel-trim behaviour was captured. The evidence ranks plausible causes; it does not prove one."
+            DiagnosticStatus.SUSPICIOUS -> buildString {
+                append("Negative fuel-trim behaviour was captured")
+                listOfNotNull(idleBank1, elevatedBank1).firstOrNull()?.let {
+                    append(" (${AnalysisSupport.formatSigned(it.median)} % at idle)")
+                }
+                append(". The evidence ranks plausible causes; it does not prove one.")
+            }
             DiagnosticStatus.SAFETY_STOPPED -> input.safetyStopReason.orEmpty()
             DiagnosticStatus.CANCELLED -> "Test cancelled."
-            else -> "The capture did not contain enough valid trim data for a conclusion."
+            else -> "The capture contained negative trim values but not enough valid data for a conclusion."
         }
 
         val stageSummaries = analyses.map { analysis ->
@@ -273,7 +333,6 @@ object RichMixtureAnalyzer {
             input = input,
             status = status,
             confidence = when {
-                normal && idle?.validTrims == true && elevated?.validTrims == true -> ResultConfidence.HIGH
                 findings.isNotEmpty() -> ResultConfidence.MEDIUM
                 else -> ResultConfidence.LOW
             },

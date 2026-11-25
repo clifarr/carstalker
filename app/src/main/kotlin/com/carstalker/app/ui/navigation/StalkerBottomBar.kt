@@ -58,6 +58,7 @@ fun StalkerBottomBar(
     currentRoute: String?,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
+    disabledRoutes: Set<String> = emptySet(),
 ) {
     val stalker = LocalStalkerColors.current
     Surface(
@@ -76,8 +77,13 @@ fun StalkerBottomBar(
         ) {
             items.forEach { item ->
                 val selected = currentRoute == item.route
+                val enabled = item.route !in disabledRoutes
                 val alpha by animateFloatAsState(
-                    targetValue = if (selected) 1f else 0.55f,
+                    targetValue = when {
+                        !enabled -> 0.3f
+                        selected -> 1f
+                        else -> 0.55f
+                    },
                     animationSpec = spring(),
                     label = "barAlpha",
                 )
@@ -86,21 +92,21 @@ fun StalkerBottomBar(
                         .weight(1f)
                         .clip(RoundedCornerShape(22.dp))
                         .background(if (selected) stalker.accent.copy(alpha = 0.14f) else Color.Transparent)
-                        .clickable { onSelect(item.route) }
+                        .clickable(enabled = enabled) { onSelect(item.route) }
                         .padding(vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Icon(
                         imageVector = item.icon,
                         contentDescription = item.label,
-                        tint = if (selected) stalker.accent else stalker.muted.copy(alpha = alpha),
+                        tint = if (selected && enabled) stalker.accent else stalker.muted.copy(alpha = alpha),
                         modifier = Modifier.size(22.dp),
                     )
                     Spacer(Modifier.height(3.dp))
                     Text(
                         text = item.label,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (selected) stalker.accent else stalker.muted.copy(alpha = alpha),
+                        color = if (selected && enabled) stalker.accent else stalker.muted.copy(alpha = alpha),
                     )
                 }
             }

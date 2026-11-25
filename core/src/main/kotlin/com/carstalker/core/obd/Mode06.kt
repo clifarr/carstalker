@@ -2,6 +2,16 @@ package com.carstalker.core.obd
 
 import com.carstalker.core.util.Hex
 
+/** Whether on-board monitor data was actually requested and read for this scan. */
+enum class MonitorDataState(val label: String) {
+    NOT_REQUESTED("Not checked"),
+    IN_PROGRESS("Reading…"),
+    AVAILABLE("Read"),
+    UNSUPPORTED("Not supported"),
+    FAILED_TO_READ("Could not read"),
+    STALE("Outdated"),
+}
+
 /**
  * One Mode 06 on-board monitor test result.
  *
@@ -21,8 +31,17 @@ data class Mode06Result(
     val max: Double?,
     val passed: Boolean?,
     val source: Int?,
+    /** False when the reported unit family contradicts the monitor/test identity. */
+    val mappingTrusted: Boolean = true,
+    /** Original response bytes, kept for audit and export. */
+    val raw: String = "",
 ) {
-    val label: String get() = "${midName.ifBlank { "Monitor ${Hex.toHex(mid)}" }} · ${tidName.ifBlank { "Test ${Hex.toHex(tid)}" }}"
+    val label: String
+        get() = if (mappingTrusted) {
+            "${midName.ifBlank { "Monitor ${Hex.toHex(mid)}" }} · ${tidName.ifBlank { "Test ${Hex.toHex(tid)}" }}"
+        } else {
+            "Unidentified on-board monitor test (MID ${Hex.toHex(mid)} / TID ${Hex.toHex(tid)})"
+        }
 
     /** How far the measured value is from the nearest limit, as a percentage of the limit span. */
     val marginPercent: Double?
@@ -44,11 +63,21 @@ data class Mode06Report(
     val supportedMids: Set<Int> = emptySet(),
     val readAt: Long = 0L,
     val loading: Boolean = false,
+    /** A report with parsed results is treated as read unless the caller says otherwise. */
+    val state: MonitorDataState = if (results.isEmpty()) MonitorDataState.NOT_REQUESTED else MonitorDataState.AVAILABLE,
+    val error: String? = null,
 ) {
     val isEmpty: Boolean get() = results.isEmpty()
-    val failures: List<Mode06Result> get() = results.filter { it.passed == false }
-    val passes: List<Mode06Result> get() = results.filter { it.passed == true }
+
+    /** Only results whose monitor identity and unit are trustworthy. */
+    val trustedResults: List<Mode06Result> get() = results.filter { it.mappingTrusted }
+
+    val failures: List<Mode06Result> get() = trustedResults.filter { it.passed == false }
+    val passes: List<Mode06Result> get() = trustedResults.filter { it.passed == true }
     val inconclusive: List<Mode06Result> get() = results.filter { it.passed == null }
+
+    /** Counts are only meaningful once the read completed. */
+    val countsAvailable: Boolean get() = state == MonitorDataState.AVAILABLE
 }
 
 /**
@@ -270,6 +299,34 @@ object Mode06Parser {
     fun midName(mid: Int): String = midNames[mid] ?: "Monitor ${Hex.toHex(mid)}"
     fun tidName(tid: Int): String = tidNames[tid] ?: "Test ${Hex.toHex(tid)}"
 
+    private enum class UnitFamily { VOLTAGE, TIME, COUNT, OTHER }
+
+    /**
+     * The unit family a monitor/test pair is expected to report. A mismatch means the decoder
+     * cannot trust the descriptive label, so the result is kept as raw data and excluded from
+     * pass/fail counts.
+     */
+    private fun expectedFamily(mid: Int, tid: Int): UnitFamily? = when (mid) {
+        in 0x01..0x10, in 0x21..0x24 -> when (tid) {
+            0x01, 0x02, 0x03, 0x04, 0x07, 0x08 -> UnitFamily.VOLTAGE
+            0x05, 0x06, 0x09, 0x0A -> UnitFamily.TIME
+            0x0B, 0x0C -> UnitFamily.COUNT
+            else -> null
+        }
+        in 0xA1..0xAD -> when (tid) {
+            0x0B, 0x0C -> UnitFamily.COUNT
+            else -> null
+        }
+        else -> null
+    }
+
+    private fun familyOf(unit: String): UnitFamily = when (unit) {
+        "mV", "V" -> UnitFamily.VOLTAGE
+        "ms", "s" -> UnitFamily.TIME
+        "count" -> UnitFamily.COUNT
+        else -> UnitFamily.OTHER
+    }
+
     fun parseSupportedMids(base: Int, data: IntArray): Set<Int> = PidSupport.decode(base, data)
 
     /**
@@ -281,6 +338,7 @@ object Mode06Parser {
         val results = mutableListOf<Mode06Result>()
         var index = 1
         while (index + 8 < payload.size) {
+            val blockStart = index
             val mid = payload[index]
             val tid = payload[index + 1]
             val uasId = payload[index + 2]
@@ -295,11 +353,16 @@ object Mode06Parser {
             val min = scale(rawMin, uas)
             val max = scale(rawMax, uas)
             val notCompleted = rawValue == 0 && rawMin == 0 && rawMax == 0
+            val expected = expectedFamily(mid, tid)
+            val mappingTrusted = uas != null &&
+                (expected == null || familyOf(uas.unit) == expected)
             val passed = when {
-                uas == null || notCompleted -> null
+                uas == null || notCompleted || !mappingTrusted -> null
                 uasId == 0x2E -> rawValue != 0
                 else -> value in min..max
             }
+            val rawText = payload.copyOfRange(blockStart, minOf(index, payload.size))
+                .joinToString(" ") { String.format(java.util.Locale.US, "%02X", it and 0xFF) }
             results += Mode06Result(
                 mid = mid,
                 midName = midName(mid),
@@ -312,6 +375,8 @@ object Mode06Parser {
                 max = max.takeUnless { notCompleted },
                 passed = passed,
                 source = source,
+                mappingTrusted = mappingTrusted,
+                raw = "46 $rawText",
             )
         }
         return results

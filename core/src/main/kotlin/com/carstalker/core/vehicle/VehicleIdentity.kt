@@ -10,7 +10,8 @@ data class VehicleIdentity(
     val cvn: List<String> = emptyList(),
     val ecuName: String? = null,
 ) {
-    val isKnown: Boolean get() = vin != null || calibrationId != null
+    val isKnown: Boolean
+        get() = vin != null || calibrationId != null || ecuName != null || cvn.isNotEmpty()
 
     /** Model year from VIN position 10 (ISO 3779), when present. */
     val modelYear: Int? get() = vin?.let { Vin.modelYear(it) }
@@ -23,8 +24,8 @@ data class VehicleIdentity(
             vin != null -> listOfNotNull(modelYear?.toString(), make)
                 .joinToString(" ")
                 .ifBlank { "VIN ${vin.takeLast(6)}" }
-            calibrationId != null -> "Connected vehicle"
-            else -> "Unknown vehicle"
+            calibrationId != null || ecuName != null || cvn.isNotEmpty() -> "Vehicle"
+            else -> "Unidentified vehicle"
         }
 }
 

@@ -43,6 +43,9 @@ object MapPlausibilityAnalyzer {
         val koeo = stages.firstOrNull { it.stage.stageId == "key_on_engine_off" }
         val idle = stages.firstOrNull { it.stage.stageId == "warm_idle" }
         val response = stages.firstOrNull { it.stage.stageId == "throttle_response" }
+        val responseExercised = response != null &&
+            response.map.count >= MIN_SAMPLES &&
+            (response.throttle.range >= 5.0 || response.rpm.range >= 300.0)
 
         val observations = mutableListOf<GuidedObservation>()
         val findings = mutableListOf<GuidedFinding>()
@@ -237,10 +240,12 @@ object MapPlausibilityAnalyzer {
             val mapRange = response.map.range
             val throttleRange = response.throttle.range
             val rpmRange = response.rpm.range
-            if (throttleRange < 5.0 && rpmRange < 300.0) {
-                warnings += "No throttle or RPM movement was captured in the response stage; the MAP response check was not evaluable."
+            if (!responseExercised) {
+                warnings += "No throttle or RPM movement was captured in the response stage; the MAP response check was not exercised and is excluded from the conclusion."
+                nextSteps += "Repeat the gentle throttle blip so RPM or throttle actually moves, then re-run the test."
             }
             when {
+                !responseExercised -> Unit
                 throttleRange > 10.0 && mapRange < RESPONSE_MIN_KPA -> findings += GuidedFinding(
                     id = "poor_map_response",
                     title = "MAP barely responds to throttle",
@@ -339,10 +344,13 @@ object MapPlausibilityAnalyzer {
             observations = observations,
             findings = findings.sortedBy { it.evidenceLevel.ordinal },
             stages = stages.map { stage ->
+                val isResponse = stage.stage.stageId == "throttle_response"
                 AnalysisSupport.stageSummary(
                     stage = stage.stage,
-                    valid = stage.valid,
+                    valid = if (isResponse) stage.valid && responseExercised else stage.valid,
                     keyPid = Signals.MAP,
+                    outcome = if (isResponse && !responseExercised) StageOutcome.NOT_EXERCISED else stage.stage.outcome,
+                    stimulusObserved = if (isResponse) responseExercised else null,
                     metrics = buildMap {
                         if (stage.map.available) put("mapKpa", stage.map.median)
                         if (stage.baro.available) put("baroKpa", stage.baro.median)

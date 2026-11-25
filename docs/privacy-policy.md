@@ -41,7 +41,7 @@ Recordings and reports are shared only when you choose **Share** or **Print**. T
 
 ## Retention and deletion
 
-Data stays on your device until you delete it. You can delete recordings in the app or clear the app's storage in Android settings. Because CarStalker does not collect data on a server, there is no server-side data to access, correct or delete.
+Data stays on your device until you delete it. You can delete individual recordings in the app. Exported reports and every other app file are removed when you clear the app's storage in Android settings, which also deletes the saved vehicle identity and settings. Because CarStalker does not collect data on a server, there is no server-side data to access, correct or delete.
 
 ## Security
 

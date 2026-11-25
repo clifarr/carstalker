@@ -57,6 +57,7 @@ fun LogsScreen(viewModel: CarStalkerViewModel) {
     val sessions by viewModel.logs.collectAsStateWithLifecycle()
     val recording by viewModel.recording.collectAsStateWithLifecycle()
     val selected by viewModel.selectedLog.collectAsStateWithLifecycle()
+    val connection by viewModel.connection.collectAsStateWithLifecycle()
     val stalker = LocalStalkerColors.current
     var deleteTarget by remember { mutableStateOf<LogSession?>(null) }
     val dateFormat = remember { SimpleDateFormat("EEE d MMM · HH:mm", Locale.getDefault()) }
@@ -137,6 +138,7 @@ fun LogsScreen(viewModel: CarStalkerViewModel) {
 
         if (sessions.isEmpty()) {
             StalkerCard {
+                Column {
                 EmptyState(
                     title = "No recordings yet",
                     message = "Tap the record button on the dashboard to capture a drive. Recordings appear here and can be played back without an adapter.",
@@ -161,6 +163,14 @@ fun LogsScreen(viewModel: CarStalkerViewModel) {
                         }
                     },
                 )
+                if (connection !is com.carstalker.app.service.ConnectionState.Ready) {
+                    Spacer(Modifier.height(10.dp))
+                    androidx.compose.material3.OutlinedButton(
+                        onClick = viewModel::connectDemo,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Try demo") }
+                }
+                }
             }
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -199,6 +209,18 @@ fun LogsScreen(viewModel: CarStalkerViewModel) {
                                         style = MaterialTheme.typography.bodySmall,
                                         color = stalker.muted,
                                     )
+                                    Spacer(Modifier.height(4.dp))
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        StatusPill(
+                                            if (session.meta.kind == "guided") {
+                                                "Guided · ${session.meta.label ?: "capture"}"
+                                            } else {
+                                                "Drive"
+                                            },
+                                            if (session.meta.kind == "guided") stalker.accentSecondary else stalker.accent,
+                                        )
+                                        if (session.meta.isDemo) StatusPill("Demo", stalker.muted)
+                                    }
                                 }
                                 IconButton(onClick = { viewModel.shareLog(session) }) {
                                     Icon(

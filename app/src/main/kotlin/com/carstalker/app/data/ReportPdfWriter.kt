@@ -57,6 +57,7 @@ object ReportPdfWriter {
         val mutedPaint = textPaint(8.5f, color = Color.rgb(100, 100, 100))
         val footerPaint = textPaint(7.5f, color = Color.rgb(120, 120, 120))
         val codePaint = textPaint(9.5f, bold = true, color = Color.rgb(160, 30, 30), mono = true)
+        val demoPaint = textPaint(7.5f, bold = true, color = Color.rgb(180, 40, 20))
         val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(205, 211, 218)
             strokeWidth = 0.8f
@@ -92,6 +93,10 @@ object ReportPdfWriter {
                 top += 25f
                 drawTextAt(textX, top, "Generated ${report.generatedLabel}", mutedPaint)
                 top += 12f
+                if (report.isDemo) {
+                    drawTextAt(textX, top, "DEMO DATA — simulated vehicle, not a real diagnostic", demoPaint)
+                    top += 12f
+                }
                 y = maxOf(MARGIN + FIRST_LOGO_SIZE + 14f, top + 6f)
             } else {
                 drawLogo(MARGIN, MARGIN, NEXT_LOGO_SIZE)
@@ -101,6 +106,14 @@ object ReportPdfWriter {
                     "CarStalker diagnostic report",
                     headerPaint,
                 )
+                if (report.isDemo) {
+                    drawTextAt(
+                        MARGIN + NEXT_LOGO_SIZE + 8f,
+                        MARGIN + 16f,
+                        "DEMO DATA — simulated vehicle",
+                        demoPaint,
+                    )
+                }
                 val pageLabel = "Page $pageNumber"
                 drawTextAt(
                     PAGE_WIDTH - MARGIN - mutedPaint.measureText(pageLabel),
@@ -267,15 +280,18 @@ object ReportPdfWriter {
             }
         }
 
-        if (report.mode06.isNotEmpty()) {
+        if (report.mode06.isNotEmpty() || report.mode06Note != null) {
             section("MODE 06 MONITOR TESTS")
+            report.mode06Note?.let { paragraph(it, mutedPaint) }
             for (test in report.mode06) {
                 val limits = listOfNotNull(
                     test.min?.let { "min $it" },
                     test.max?.let { "max $it" },
                 ).joinToString(", ")
                 val suffix = if (limits.isNotEmpty()) " ($limits)" else ""
-                textLine("${test.label}: ${test.value} ${test.unit}$suffix — ${test.state}", bodyPaint, gap = 2.5f)
+                val trust = if (test.mappingTrusted) "" else " [unverified mapping]"
+                textLine("${test.label}: ${test.value} ${test.unit}$suffix — ${test.state}$trust", bodyPaint, gap = 2.5f)
+                test.raw?.let { textLine("  raw: $it", mutedPaint, gap = 2f, x = MARGIN + 8f) }
             }
         }
 
@@ -283,6 +299,7 @@ object ReportPdfWriter {
             section("GUIDED DIAGNOSIS")
             for (wizard in report.wizardResults) {
                 textLine("${wizard.title} — ${wizard.confidence} confidence", headingPaint, gap = 4f)
+                wizard.ruleVersion?.let { textLine("Rules $it", mutedPaint, gap = 2f) }
                 paragraph(wizard.summary, bodyPaint)
                 for (cause in wizard.causes) {
                     textLine("${cause.likelihood}: ${cause.title} (${cause.confidence} confidence)", bodyPaint, gap = 3f)

@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -91,6 +93,7 @@ fun GuidedTestScreen(
     definition: DiagnosticDefinition,
     viewModel: CarStalkerViewModel,
     onBack: () -> Unit,
+    onOpenConnect: () -> Unit,
 ) {
     val capabilities by viewModel.vehicleCapabilities.collectAsStateWithLifecycle()
     val snapshot by viewModel.guidedSnapshot.collectAsStateWithLifecycle()
@@ -161,6 +164,8 @@ fun GuidedTestScreen(
                 capabilities = capabilities,
                 connection = connection,
                 onStart = viewModel::startGuidedTest,
+                onConnect = onOpenConnect,
+                onTryDemo = viewModel::connectDemo,
                 onDemoScenario = viewModel::setDemoScenario,
             )
         }
@@ -175,9 +180,12 @@ private fun GuidedIntroView(
     capabilities: VehicleCapabilities,
     connection: ConnectionState,
     onStart: (PrerequisiteAnswers) -> Unit,
+    onConnect: () -> Unit,
+    onTryDemo: () -> Unit,
     onDemoScenario: (DemoScenario) -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
+    val connected = connection is ConnectionState.Ready
     var demoScenario by remember { mutableStateOf<DemoScenario?>(null) }
     var engineWarm by rememberSaveable(definition.id) { mutableStateOf(false) }
     var engineCold by rememberSaveable(definition.id) { mutableStateOf(false) }
@@ -200,20 +208,28 @@ private fun GuidedIntroView(
     StalkerCard(accent = if (availability.availability.startable) stalker.accent else stalker.warning) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                AvailabilityPill(availability.availability)
+                if (connected) {
+                    AvailabilityPill(availability.availability)
+                } else {
+                    StatusPill("Connect to check", stalker.muted)
+                }
                 Spacer(Modifier.width(8.dp))
                 StatusPill("~${definition.estimatedMinutes} min", stalker.accentSecondary)
             }
             Spacer(Modifier.height(10.dp))
             Text(definition.description, style = MaterialTheme.typography.bodySmall, color = stalker.muted)
+            definition.durationNote?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, style = MaterialTheme.typography.labelSmall, color = stalker.warning)
+            }
             Spacer(Modifier.height(12.dp))
             Text("What you need", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
-            definition.whatYouNeed.forEach {
+            definition.whatYouNeed.take(3).forEach {
                 Text("• $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
             }
             Spacer(Modifier.height(10.dp))
             Text("Safety", style = MaterialTheme.typography.labelMedium, color = stalker.warning)
-            definition.safetyNotes.forEach {
+            definition.safetyNotes.take(2).forEach {
                 Text("• $it", style = MaterialTheme.typography.bodySmall, color = stalker.muted)
             }
             if (availability.reasons.isNotEmpty()) {
@@ -275,10 +291,22 @@ private fun GuidedIntroView(
                 )
             }
             if (definition.limitations.isNotEmpty()) {
-                Spacer(Modifier.height(10.dp))
-                Text("Limits of this test", style = MaterialTheme.typography.labelMedium, color = stalker.muted)
-                definition.limitations.take(4).forEach {
-                    Text("• $it", style = MaterialTheme.typography.labelSmall, color = stalker.muted)
+                Spacer(Modifier.height(8.dp))
+                var showLimits by rememberSaveable(definition.id) { mutableStateOf(false) }
+                TextButton(
+                    onClick = { showLimits = !showLimits },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Text(
+                        if (showLimits) "Hide technical limits" else "Technical limits (${definition.limitations.size})",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = stalker.muted,
+                    )
+                }
+                if (showLimits) {
+                    definition.limitations.forEach {
+                        Text("• $it", style = MaterialTheme.typography.labelSmall, color = stalker.muted)
+                    }
                 }
             }
             val demo = (connection as? ConnectionState.Ready)?.transportName?.contains("Demo") == true
@@ -290,6 +318,16 @@ private fun GuidedIntroView(
                 })
             }
             Spacer(Modifier.height(14.dp))
+            if (!connected) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onConnect,
+                        colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
+                    ) { Text("Connect adapter") }
+                    OutlinedButton(onClick = onTryDemo) { Text("Try demo") }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             Button(
                 onClick = {
                     onStart(
@@ -305,14 +343,21 @@ private fun GuidedIntroView(
                         ),
                     )
                 },
-                enabled = availability.availability.startable && prerequisitesReady,
+                enabled = connected && availability.availability.startable && prerequisitesReady,
                 colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
             ) {
                 Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
                 Text("Start guided test")
             }
-            if (!prerequisitesReady) {
+            if (!connected) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Connect an adapter or start the demo to run this guide.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+            } else if (!prerequisitesReady) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "Complete the checks above to enable Start.",
@@ -323,7 +368,7 @@ private fun GuidedIntroView(
             if (capabilities.profile.fuelType == com.carstalker.core.guided.FuelType.UNKNOWN) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Engine type is not set; the result will be marked limited. Set it on the Diagnose tab.",
+                    "Engine type is not set; the result will be marked limited. Set it in Settings or on the Diagnose tab.",
                     style = MaterialTheme.typography.labelSmall,
                     color = stalker.warning,
                 )
@@ -332,6 +377,7 @@ private fun GuidedIntroView(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GuidedCaptureView(
     definition: DiagnosticDefinition,
@@ -375,8 +421,8 @@ private fun GuidedCaptureView(
             Spacer(Modifier.height(4.dp))
             Text(
                 stage?.instruction.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                color = stalker.muted,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -472,13 +518,16 @@ private fun GuidedCaptureView(
                     Text("Mark symptom now")
                 }
                 Text(
-                    if (snapshot.markerCount == 0) {
-                        "Passenger: tap when the power loss occurs."
-                    } else {
-                        "${snapshot.markerCount} symptom marker(s) recorded."
+                    when {
+                        snapshot.markerCount == 0 && snapshot.invalidatedMarkerCount > 0 ->
+                            "${snapshot.invalidatedMarkerCount} marker(s) were recorded but invalidated by an interruption. Tap again during a valid segment."
+                        snapshot.markerCount == 0 -> "Passenger: tap when the power loss occurs."
+                        snapshot.invalidatedMarkerCount > 0 ->
+                            "${snapshot.markerCount} valid marker(s); ${snapshot.invalidatedMarkerCount} earlier marker(s) invalidated."
+                        else -> "${snapshot.markerCount} symptom marker(s) recorded."
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = stalker.muted,
+                    color = if (snapshot.invalidatedMarkerCount > 0) stalker.warning else stalker.muted,
                 )
             }
             Spacer(Modifier.height(10.dp))
@@ -488,26 +537,56 @@ private fun GuidedCaptureView(
                 trace,
                 listOf(stalker.accent, stalker.accentSecondary, stalker.warning),
             )
+            var showTrace by rememberSaveable("trace") { mutableStateOf(false) }
             if (live.first.isNotEmpty()) {
-                TraceChart(
-                    series = live.first,
-                    modifier = Modifier.fillMaxWidth().height(150.dp),
-                    unit = live.second,
-                    durationLabel = "${(snapshot.stageElapsedMs / 1000)} s",
-                )
+                Spacer(Modifier.height(6.dp))
+                TextButton(
+                    onClick = { showTrace = !showTrace },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Text(
+                        if (showTrace) "Hide live trace" else "Show live trace",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = stalker.accentSecondary,
+                    )
+                }
+                if (showTrace) {
+                    TraceChart(
+                        series = live.first,
+                        modifier = Modifier.fillMaxWidth().height(150.dp),
+                        unit = live.second,
+                        durationLabel = "${(snapshot.stageElapsedMs / 1000)} s",
+                    )
+                }
             }
 
             val demo = (connection as? ConnectionState.Ready)?.transportName?.contains("Demo") == true
             if (demo) {
-                Spacer(Modifier.height(12.dp))
-                DemoControls(selected = demoScenario, onSelect = {
-                    demoScenario = it
-                    onDemoScenario(it)
-                })
+                var showDemo by rememberSaveable("demo") { mutableStateOf(false) }
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = { showDemo = !showDemo },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                ) {
+                    Text(
+                        if (showDemo) "Hide simulation controls" else "Simulation controls",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = stalker.accentSecondary,
+                    )
+                }
+                if (showDemo) {
+                    DemoControls(selected = demoScenario, onSelect = {
+                        demoScenario = it
+                        onDemoScenario(it)
+                    })
+                }
             }
 
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 OutlinedButton(onClick = onCancel) {
                     Icon(Icons.Rounded.Cancel, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
@@ -532,6 +611,7 @@ private fun GuidedCaptureView(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun GuidedResultView(
     definition: DiagnosticDefinition,
@@ -553,29 +633,171 @@ private fun GuidedResultView(
         DiagnosticStatus.SAFETY_STOPPED -> stalker.danger
         DiagnosticStatus.CANCELLED -> stalker.muted
     }
-    StalkerCard(accent = statusColor) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Result",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                StatusPill(result.status.label, statusColor)
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "${result.confidence.label} confidence · ${result.profile.label()}",
-                style = MaterialTheme.typography.labelSmall,
-                color = stalker.muted,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(result.summary, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+    val primary = result.primaryFinding
+    val patternMatch = when (primary?.evidenceLevel) {
+        com.carstalker.core.guided.EvidenceLevel.STRONG -> "Strong"
+        com.carstalker.core.guided.EvidenceLevel.MODERATE -> "Moderate"
+        com.carstalker.core.guided.EvidenceLevel.SUPPORTIVE -> "Supportive"
+        com.carstalker.core.guided.EvidenceLevel.WEAK -> "Weak"
+        null -> "No pattern"
+    }
+    val measurementQuality = when {
+        !result.quality.requiredSignalsPresent -> "Incomplete"
+        result.quality.stimulusObserved == false -> "Not exercised"
+        !result.quality.samplingAdequate -> "Limited"
+        result.quality.interruptions > 0 -> "Limited"
+        else -> "Adequate"
+    }
+    val dataBullets = buildList {
+        if (primary != null) {
+            addAll(primary.supporting.take(3))
+        } else {
+            addAll(result.observations.take(3).map { "${it.label}: ${it.value}" })
+        }
+    }
+    val nextCheck = result.nextCheck
 
-            if (result.observations.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                SectionHeader("Observed")
+    Column {
+        StalkerCard(accent = statusColor) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Result",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    StatusPill(result.status.label, statusColor)
+                }
+                Spacer(Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    StatusPill("Pattern: $patternMatch", if (patternMatch == "No pattern") stalker.muted else stalker.accentSecondary)
+                    StatusPill("Data: $measurementQuality", when (measurementQuality) {
+                        "Adequate" -> stalker.success
+                        "Incomplete", "Not exercised" -> stalker.warning
+                        else -> stalker.accentSecondary
+                    })
+                }
                 Spacer(Modifier.height(6.dp))
+                Text(
+                    "${result.confidence.label} evidence confidence · ${result.profile.label()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(result.summary, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+
+                if (result.status == DiagnosticStatus.INCONCLUSIVE ||
+                    result.status == DiagnosticStatus.UNABLE_TO_RUN ||
+                    result.status == DiagnosticStatus.SAFETY_STOPPED
+                ) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "What was missing",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = stalker.warning,
+                    )
+                    val missing = result.quality.missingSignals
+                    if (missing.isNotEmpty()) {
+                        Text("• Missing: ${missing.joinToString()}", style = MaterialTheme.typography.bodySmall, color = stalker.muted)
+                    }
+                    result.quality.notes.take(3).forEach {
+                        Text("• $it", style = MaterialTheme.typography.bodySmall, color = stalker.muted)
+                    }
+                    if (missing.isEmpty() && result.quality.notes.isEmpty()) {
+                        Text("• The capture did not contain enough valid data for a conclusion.", style = MaterialTheme.typography.bodySmall, color = stalker.muted)
+                    }
+                }
+
+                if (dataBullets.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("What the data shows", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
+                    dataBullets.forEach {
+                        Text("• $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+
+                Spacer(Modifier.height(14.dp))
+                Surface(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                    color = stalker.accent.copy(alpha = 0.10f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, stalker.accent.copy(alpha = 0.45f)),
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text("NEXT SAFE CHECK", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            nextCheck,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    result.scope,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+
+                if (result.warnings.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    result.warnings.take(2).forEach {
+                        Text("• $it", style = MaterialTheme.typography.bodySmall, color = stalker.danger)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        if (definition.id == "health_baseline") {
+            OutlinedButton(onClick = onSaveBaseline, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(5.dp))
+                Text("Save this run as the baseline")
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        Button(
+            onClick = onSave,
+            enabled = captures.isNotEmpty(),
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
+        ) {
+            Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Save result")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Rounded.PictureAsPdf, contentDescription = null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Share PDF")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onExportJson, modifier = Modifier.fillMaxWidth()) {
+            Text("Export JSON")
+        }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(onClick = onRestart, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Rounded.Replay, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(5.dp))
+            Text("Run again")
+        }
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+            Text("← All diagnostics")
+        }
+
+        Spacer(Modifier.height(14.dp))
+        ExpandableSection(
+            title = "Evidence and graphs",
+            subtitle = "${result.observations.size} observation(s) · ${captures.size} captured stage(s)",
+        ) {
+            if (result.observations.isNotEmpty()) {
+                Text("Observed", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
                 result.observations.forEach { observation ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                         Text(
@@ -592,127 +814,121 @@ private fun GuidedResultView(
                     }
                 }
             }
-
-            if (result.findings.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                SectionHeader("Findings")
-                Spacer(Modifier.height(6.dp))
-                result.findings.forEach { finding -> FindingCard(finding) }
-            }
-
-            if (captures.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                SectionHeader("Captured traces")
-                Spacer(Modifier.height(6.dp))
-                captures.forEach { stage ->
-                    val chart = capturedSeries(
-                        definition,
-                        stage,
-                        listOf(stalker.accent, stalker.accentSecondary, stalker.warning),
+            captures.forEach { stage ->
+                val chart = capturedSeries(
+                    definition,
+                    stage,
+                    listOf(stalker.accent, stalker.accentSecondary, stalker.warning),
+                )
+                if (chart.first.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(stage.title, style = MaterialTheme.typography.labelMedium, color = stalker.accent)
+                    TraceChart(
+                        series = chart.first,
+                        modifier = Modifier.fillMaxWidth().height(150.dp),
+                        unit = chart.second,
+                        durationLabel = "${(stage.durationMs / 1000)} s",
                     )
-                    if (chart.first.isNotEmpty()) {
-                        Text(stage.title, style = MaterialTheme.typography.labelMedium, color = stalker.accent)
-                        TraceChart(
-                            series = chart.first,
-                            modifier = Modifier.fillMaxWidth().height(150.dp),
-                            unit = chart.second,
-                            durationLabel = "${(stage.durationMs / 1000)} s",
-                        )
-                        Spacer(Modifier.height(8.dp))
+                }
+            }
+            if (result.stages.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                Text("Stage quality", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
+                result.stages.forEach { stage -> StageSummaryRow(stage) }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        ExpandableSection(
+            title = "Other possible causes",
+            subtitle = if (primary == null) "No candidate cause ranked" else "${primary.alternatives.size} alternative(s)",
+        ) {
+            if (primary != null) {
+                Text(primary.title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                Text(primary.explanation, style = MaterialTheme.typography.bodySmall, color = stalker.muted)
+                primary.against.forEach {
+                    Text("• Against: $it", style = MaterialTheme.typography.labelSmall, color = stalker.muted)
+                }
+                if (primary.alternatives.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Also consider", style = MaterialTheme.typography.labelMedium, color = stalker.warning)
+                    primary.alternatives.forEach {
+                        Text("• $it", style = MaterialTheme.typography.bodySmall, color = stalker.muted)
                     }
                 }
             }
-
-            if (result.stages.isNotEmpty()) {
-                Spacer(Modifier.height(14.dp))
-                SectionHeader("Stage quality")
-                Spacer(Modifier.height(6.dp))
-                result.stages.forEach { stage -> StageSummaryRow(stage) }
+            result.findings.drop(1).forEach { finding ->
+                Spacer(Modifier.height(8.dp))
+                FindingCard(finding)
             }
+        }
 
-            if (result.quality.notes.isNotEmpty() || !result.quality.requiredSignalsPresent || !result.quality.samplingAdequate) {
-                Spacer(Modifier.height(12.dp))
-                SectionHeader("Data quality")
-                Spacer(Modifier.height(6.dp))
-                if (!result.quality.requiredSignalsPresent) {
-                    Text(
-                        "Required signals missing: ${result.quality.missingSignals.joinToString().ifBlank { "unknown" }}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = stalker.danger,
-                    )
-                }
-                if (!result.quality.samplingAdequate) {
-                    Text(
-                        "Sampling was not adequate for the strongest interpretation.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = stalker.warning,
-                    )
-                }
+        Spacer(Modifier.height(10.dp))
+        ExpandableSection(
+            title = "Data quality and limitations",
+            subtitle = result.quality.evidenceQuality.ifBlank { measurementQuality },
+        ) {
+            if (result.quality.notes.isNotEmpty()) {
+                Text("Data quality", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
                 result.quality.notes.forEach {
                     Text("• $it", style = MaterialTheme.typography.labelSmall, color = stalker.muted)
                 }
             }
-
             if (result.warnings.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                SectionHeader("Warnings")
                 Spacer(Modifier.height(6.dp))
+                Text("Warnings", style = MaterialTheme.typography.labelMedium, color = stalker.danger)
                 result.warnings.forEach {
                     Text("• $it", style = MaterialTheme.typography.bodySmall, color = stalker.danger)
                 }
             }
-
             if (result.limitations.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                SectionHeader("Limitations")
                 Spacer(Modifier.height(6.dp))
+                Text("Limitations", style = MaterialTheme.typography.labelMedium, color = stalker.muted)
                 result.limitations.forEach {
                     Text("• $it", style = MaterialTheme.typography.labelSmall, color = stalker.muted)
                 }
             }
-
-            if (result.nextSteps.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                SectionHeader("Next steps")
+            if (result.stagesSkipped.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
+                Text("Skipped stages: ${result.stagesSkipped.joinToString()}", style = MaterialTheme.typography.labelSmall, color = stalker.muted)
+            }
+            if (result.nextSteps.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text("Next steps", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
                 result.nextSteps.forEach {
                     Text("• $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                 }
             }
+        }
+    }
+}
 
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onSave,
-                    enabled = captures.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
-                ) {
-                    Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Save capture")
-                }
-                OutlinedButton(onClick = onExport) {
-                    Icon(Icons.Rounded.PictureAsPdf, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("PDF")
-                }
-                if (definition.id == "health_baseline") {
-                    OutlinedButton(onClick = onSaveBaseline) {
-                        Icon(Icons.Rounded.Save, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(Modifier.width(5.dp))
-                        Text("Save baseline")
+@Composable
+private fun ExpandableSection(
+    title: String,
+    subtitle: String,
+    content: @Composable () -> Unit,
+) {
+    val stalker = LocalStalkerColors.current
+    var expanded by rememberSaveable(title) { mutableStateOf(false) }
+    StalkerCard {
+        Column {
+            Surface(
+                onClick = { expanded = !expanded },
+                color = Color.Transparent,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                        Text(subtitle, style = MaterialTheme.typography.labelSmall, color = stalker.muted)
                     }
+                    Text(if (expanded) "▾" else "▸", style = MaterialTheme.typography.titleMedium, color = stalker.accent)
                 }
             }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onExportJson) { Text("Export JSON") }
-                OutlinedButton(onClick = onRestart) {
-                    Icon(Icons.Rounded.Replay, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(5.dp))
-                    Text("Run again")
-                }
-                TextButton(onClick = onBack) { Text("← All guides") }
+            if (expanded) {
+                Spacer(Modifier.height(10.dp))
+                content()
             }
         }
     }
@@ -772,8 +988,12 @@ private fun StageSummaryRow(stage: StageSummary) {
                 modifier = Modifier.weight(1f),
             )
             StatusPill(
-                if (stage.valid) "Valid" else "Limited",
-                if (stage.valid) stalker.success else stalker.warning,
+                stage.outcome.label,
+                when (stage.outcome) {
+                    com.carstalker.core.guided.StageOutcome.VALID -> stalker.success
+                    com.carstalker.core.guided.StageOutcome.SKIPPED -> stalker.muted
+                    else -> stalker.warning
+                },
             )
         }
         Text(

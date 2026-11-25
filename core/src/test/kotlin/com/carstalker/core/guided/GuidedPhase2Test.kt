@@ -188,7 +188,7 @@ class GuidedPhase2Test {
             Signals.RPM to { _: Double -> rpm },
             Signals.COOLANT to { _: Double -> 90.0 },
             Signals.SPEED to { _: Double -> 0.0 },
-            Signals.THROTTLE to { _: Double -> 5.0 },
+            Signals.THROTTLE to { s: Double -> 5.0 + (s * 2.0).coerceAtMost(20.0) },
             Signals.FUEL_SYSTEM_STATUS to { _: Double -> 2.0 },
             Signals.O2_B1S1 to o2,
             Signals.O2_B1S2 to { _: Double -> 0.45 },

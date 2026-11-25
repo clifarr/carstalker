@@ -75,6 +75,51 @@ class ElmResponseParserTest {
     }
 
     @Test
+    fun `does not mistake a mode 01 bitmap for a legacy header`() {
+        val response = ElmResponseParser.parse("41 00 80 48 00 00\r\r>")
+        assertArrayEquals(
+            intArrayOf(0x41, 0x00, 0x80, 0x48, 0x00, 0x00),
+            response.payloads.single(),
+        )
+    }
+
+    @Test
+    fun `decodes a legacy multi-message VIN whose continuation starts with a letter`() {
+        // ISO 9141-2/J1850 repeats 49 02 <frame> on every line. The second frame starts with
+        // "H"; without an ECU-address check this line looks like a three-byte ISO header.
+        val raw = listOf(
+            "49 02 01 00 00 00 31",
+            "49 02 02 48 47 43 4D",
+            "49 02 03 38 32 36 33",
+            "49 02 04 33 41 30 30",
+            "49 02 05 34 33 35 32",
+        ).joinToString("\r") + "\r\r>"
+
+        val response = ElmResponseParser.parse(raw)
+        assertEquals(
+            "1HGCM82633A004352",
+            com.carstalker.core.vehicle.Mode09Decoder.decodeVin(response.payloads),
+        )
+    }
+
+    @Test
+    fun `decodes a headerless VIN starting with J`() {
+        // A JHM (Japan-built Honda) VIN puts "J" where the three-byte header heuristic looks.
+        val raw = listOf(
+            "014",
+            "0: 49 02 01 4A 48 4D 46",
+            "1: 41 31 32 33 34 35 36",
+            "2: 37 38 39 30 30 30",
+        ).joinToString("\r") + "\r\r>"
+
+        val response = ElmResponseParser.parse(raw)
+        assertEquals(
+            "JHMFA123456789000",
+            com.carstalker.core.vehicle.Mode09Decoder.decodeVin(response.payloads),
+        )
+    }
+
+    @Test
     fun `reassembles ELM multi-frame output`() {
         val raw = "0: 49 02 01 00 00 00 31\r1: 47 31 4A 43 35 34 34 34\r2: 52 31 32 33 34 35 36 37\r\r>"
         val response = ElmResponseParser.parse(raw)

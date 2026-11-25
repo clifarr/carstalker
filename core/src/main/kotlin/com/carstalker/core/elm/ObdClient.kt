@@ -7,6 +7,7 @@ import com.carstalker.core.obd.Ecu
 import com.carstalker.core.obd.FreezeFrame
 import com.carstalker.core.obd.FreezeFrameParser
 import com.carstalker.core.obd.Mode06Parser
+import com.carstalker.core.obd.MonitorDataState
 import com.carstalker.core.obd.Mode06Report
 import com.carstalker.core.obd.Mode06Result
 import com.carstalker.core.obd.MonitorStatus
@@ -187,6 +188,11 @@ class ObdClient(private val elm: Elm327Client) {
             results = results,
             supportedMids = monitorMids.toSet(),
             readAt = System.currentTimeMillis(),
+            state = when {
+                supported.isEmpty() && results.isEmpty() -> MonitorDataState.UNSUPPORTED
+                results.isEmpty() -> MonitorDataState.FAILED_TO_READ
+                else -> MonitorDataState.AVAILABLE
+            },
         )
     }
 

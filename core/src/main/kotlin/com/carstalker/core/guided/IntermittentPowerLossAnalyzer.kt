@@ -101,9 +101,43 @@ object IntermittentPowerLossAnalyzer {
                 "${AnalysisSupport.format(overallSpeed.min, 0)}–${AnalysisSupport.format(overallSpeed.max, 0)} km/h",
             )
         }
-        observations += GuidedObservation("Symptom markers", stage.markers.size.toString())
+        val invalidated = stage.invalidatedMarkers
+        observations += GuidedObservation(
+            "Symptom markers",
+            buildString {
+                append("${stage.markers.size} valid")
+                if (invalidated.isNotEmpty()) append(", ${invalidated.size} invalidated")
+            },
+        )
 
         if (stage.markers.isEmpty()) {
+            if (invalidated.isNotEmpty()) {
+                warnings += "A symptom marker was recorded, but its capture segment was interrupted and invalidated. It is not presented as no marker."
+                nextSteps += "Repeat with a passenger who can tap Mark symptom, and keep the required driving condition until the stage completes."
+                return AnalysisSupport.buildResult(
+                    input = input,
+                    status = DiagnosticStatus.INCONCLUSIVE,
+                    confidence = ResultConfidence.LOW,
+                    summary = "A symptom marker was recorded, but the segment around it was discarded after an interruption, so there is no valid event window to compare.",
+                    observations = observations,
+                    stages = listOf(
+                        AnalysisSupport.stageSummary(
+                            stage,
+                            valid = false,
+                            keyPid = Signals.RPM,
+                            outcome = StageOutcome.INTERRUPTED,
+                            notes = listOf("Marker recorded but invalidated by an interruption."),
+                        ),
+                    ),
+                    quality = quality,
+                    warnings = warnings,
+                    nextSteps = nextSteps,
+                    limitations = listOf(
+                        "The symptom marker is manual; an invalidated segment cannot be used as evidence.",
+                        "A short capture may not reproduce an intermittent fault.",
+                    ),
+                )
+            }
             warnings += "No symptom marker was recorded. The capture documents the drive but cannot localize the event."
             nextSteps += "Repeat with a passenger who can tap Mark symptom when the power loss occurs."
             return AnalysisSupport.buildResult(
@@ -112,7 +146,15 @@ object IntermittentPowerLossAnalyzer {
                 confidence = ResultConfidence.LOW,
                 summary = "No symptom was marked during the drive capture, so there is no event to compare.",
                 observations = observations,
-                stages = listOf(AnalysisSupport.stageSummary(stage, valid = true, keyPid = Signals.RPM)),
+                stages = listOf(
+                    AnalysisSupport.stageSummary(
+                        stage,
+                        valid = false,
+                        keyPid = Signals.RPM,
+                        outcome = StageOutcome.NOT_EXERCISED,
+                        notes = listOf("No symptom marker was entered."),
+                    ),
+                ),
                 quality = quality,
                 warnings = warnings,
                 nextSteps = nextSteps,

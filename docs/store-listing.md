@@ -21,7 +21,7 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 
 ## Full description
 
-> CarStalker is an OBD-II app for Android that goes beyond a live dashboard. It shows live engine data, reads and clears trouble codes, records your drives — and adds assisted diagnostics that rank likely causes and show the evidence. No account, no ads, no subscription and no cloud. Under 2 MB installed.
+> CarStalker is an OBD-II app for Android that goes beyond a live dashboard. It shows live engine data, reads and clears trouble codes, records your drives — and adds assisted diagnostics that rank likely causes and show the evidence. No account, no ads, no subscription and no cloud. A 1.9 MB download.
 >
 > CarStalker is currently in beta. The core flows are usable, but guided tests and thresholds are still being validated on real cars. Feedback is welcome.
 >
@@ -29,14 +29,15 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 > Plenty of apps show RPM and clear codes. CarStalker adds step-by-step guided tests that use live data and the ECU's own self-tests to answer the question that matters: which cause is most plausible, what else could explain it, and which check would distinguish them? Every result lists the observations, evidence for and against each cause, competing explanations, a confidence category and one next check — and states what it cannot prove.
 >
 > SMALL BY DESIGN
-> The download is about 1.9 MB and the installed app is under 2 MB — less than 10 MB including app data. Comparable OBD apps routinely ship at tens or hundreds of megabytes because of ads, analytics, crash SDKs and bundled media. CarStalker has none of those, so it installs fast and runs on an old phone left in the glovebox.
+> The download is 1.9 MB. A fresh install takes about 5 MB, and Android's background code optimization can grow the installed app to roughly 12 MB. Drive recordings add about 1 MB per hour and are kept until you delete them. Comparable OBD apps routinely ship at tens or hundreds of megabytes because of ads, analytics, crash SDKs and bundled media. CarStalker has none of those, so it installs fast and runs on an old phone left in the glovebox.
 >
 > BUILT ON PUBLIC WORK
 > CarStalker does not invent a new diagnostic science. It compiles publicly available, freely licensed information — OBD-II standards, the CC0 OBDex trouble-code catalogue and public technician explanations — into one offline tool. Sources and licences are in the repository.
 >
 > WHAT IT DOES
 > • Guided diagnostics: step-by-step tests that use live data and the ECU's own self-tests to rank plausible causes, show competing explanations and suggest one next check. Every result states what it cannot prove.
-> • Live telemetry: RPM, speed, load, coolant, intake temperature, MAF, throttle, fuel trims, fuel level and more. The dashboard picks the ten most useful parameters your car reports.
+> • Live telemetry: RPM, speed, load, coolant, intake temperature, MAF, throttle, fuel trims, fuel level and more. The default dashboard picks six of the most useful parameters your car reports, and up to ten can be shown.
+> • Multiple dashboards: create a blank dashboard with only the values you need and hide the gauges. Only the values on the active dashboard are polled, so a single value such as battery voltage updates as fast as the adapter allows.
 > • Diagnostics: read stored, pending and permanent trouble codes with human-readable descriptions; clear codes behind a confirmation; see MIL status and readiness monitors.
 > • Freeze frames: see the sensor values recorded when a code was stored.
 > • Mode 06 self-tests: read on-board monitor results with the ECU's own limits and pass/fail state.
@@ -61,7 +62,7 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 
 ## Beta release notes
 
-> First beta: assisted diagnostics, live telemetry, trouble codes with freeze frames and Mode 06, readiness monitors, PDF reports, drive recordings and playback, custom PIDs and a full demo mode. No account or hardware is needed to explore the app. Expect changes while the guided tests are validated on more vehicles.
+> 0.4.0: multiple dashboards with blank dashboards, optional gauges and dashboard-scoped polling; a clearer result hierarchy with pattern match, data quality and one next safe check; browseable diagnostic catalogue with search, categories and code matches; custom PIDs in the dashboard picker; per-vehicle engine profiles; transport-specific connection errors; Mode 06 mapping/unit validation; stricter safety and stimulus checks; and PDF/JSON provenance with VIN masking. No account or hardware is needed to explore the demo. Expect changes while the guided tests are validated on more vehicles.
 
 ## Contact and policy
 
@@ -73,7 +74,7 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 
 ## App access (reviewer instructions)
 
-> No account or login is required. On the Connect screen, choose **Demo**, then **Start demo**. The demo car exposes live data, two trouble codes, readiness monitors, recordings, PDF reports and the guided diagnostic flows without an OBD-II adapter.
+> No account or login is required. On the Connect screen, choose **Demo**, then **Start demo**. The demo car exposes live data, a stored and a pending trouble code, readiness monitors, recordings, PDF reports and the guided diagnostic flows without an OBD-II adapter.
 
 ## Data safety answers
 
@@ -129,7 +130,7 @@ Copy-paste material for the Google Play Console. The app is currently a **beta**
 | --- | --- |
 | App icon 512×512, 32-bit PNG with alpha, ≤1 MB | ✅ [icon.png](icon.png) |
 | Feature graphic 1024×500, JPEG or 24-bit PNG without alpha | ✅ [feature-graphic.png](feature-graphic.png) |
-| Phone screenshots, 2–8, 9:16 portrait | ✅ Lead with diagnostics: [16-diagnose.png](screenshots/16-diagnose.png), [17-guided-capture.png](screenshots/17-guided-capture.png), [18-guided-result.png](screenshots/18-guided-result.png), then [03-dashboard.png](screenshots/03-dashboard.png), [05-codes.png](screenshots/05-codes.png), [09-playback.png](screenshots/09-playback.png). Extras: [01-connect.png](screenshots/01-connect.png), [08-logs.png](screenshots/08-logs.png), [11-custom-pid.png](screenshots/11-custom-pid.png). |
+| Phone screenshots, 2–8, 9:16 portrait | ✅ Lead with diagnostics: [16-diagnose.png](screenshots/16-diagnose.png), [17-guided-capture.png](screenshots/17-guided-capture.png), [18-guided-result.png](screenshots/18-guided-result.png), then [03-dashboard.png](screenshots/03-dashboard.png), [05-codes.png](screenshots/05-codes.png), [09-playback.png](screenshots/09-playback.png). Extras: [01-connect.png](screenshots/01-connect.png), [08-logs.png](screenshots/08-logs.png), [11-custom-pid.png](screenshots/11-custom-pid.png), [19-dashboards.png](screenshots/19-dashboards.png), [20-dashboard-voltage.png](screenshots/20-dashboard-voltage.png). |
 | Tablet screenshots | Optional; add 4+ if you want to promote tablet support |
 | Promo video | Optional |
 

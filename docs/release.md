@@ -15,6 +15,8 @@
 
 - Install the release APK on a device or emulator.
 - Test demo mode and, if possible, a real adapter.
+- Bump `versionCode` and `versionName` in `app/build.gradle.kts`.
+- Add the release to [CHANGELOG.md](../CHANGELOG.md).
 - Update the beta notes in [store-listing.md](store-listing.md) if needed.
 - Commit and push.
 

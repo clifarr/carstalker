@@ -47,9 +47,8 @@ data class AppSettings(
     val tcpHost: String = "192.168.0.10",
     val tcpPort: Int = 35000,
     val usbBaud: Int = 38400,
-    val dashboardPids: List<Int> = DefaultDashboardPids,
-    /** When true the dashboard picks the top-weighted parameters the car supports. */
-    val dashboardAuto: Boolean = true,
+    val dashboards: List<DashboardConfig> = listOf(DefaultDashboardConfig),
+    val activeDashboardId: String = DefaultDashboardConfig.id,
     val customPids: List<CustomPid> = emptyList(),
     val lastVin: String? = null,
     /** Optional shop name printed at the top of exported reports. */
@@ -59,6 +58,23 @@ data class AppSettings(
     val aspiration: Aspiration = Aspiration.UNKNOWN,
     /** Serialized same-vehicle baseline for the longitudinal health guide. */
     val baselineJson: String? = null,
+    /** Per-vehicle engine profile, keyed by VIN or a stable demo/unknown key. */
+    val vehicleProfiles: Map<String, VehicleProfileEntry> = emptyMap(),
+    val profileVehicleKey: String = "unknown",
+    val includeVinInReports: Boolean = false,
+) {
+    val activeDashboard: DashboardConfig
+        get() = dashboards.firstOrNull { it.id == activeDashboardId }
+            ?: dashboards.firstOrNull()
+            ?: DefaultDashboardConfig
+
+    fun resolvedDashboardPids(supported: Set<Int>): List<Int> = activeDashboard.resolvePids(supported)
+}
+
+@kotlinx.serialization.Serializable
+data class VehicleProfileEntry(
+    val fuelType: FuelType = FuelType.UNKNOWN,
+    val aspiration: Aspiration = Aspiration.UNKNOWN,
 )
 
 class SettingsRepository(private val context: Context) {
@@ -74,6 +90,8 @@ class SettingsRepository(private val context: Context) {
         val tcpHost = stringPreferencesKey("tcp_host")
         val tcpPort = intPreferencesKey("tcp_port")
         val usbBaud = intPreferencesKey("usb_baud")
+        val dashboards = stringPreferencesKey("dashboards")
+        val activeDashboardId = stringPreferencesKey("active_dashboard_id")
         val dashboardPids = stringPreferencesKey("dashboard_pids")
         val dashboardAuto = booleanPreferencesKey("dashboard_auto")
         val customPids = stringPreferencesKey("custom_pids")
@@ -82,6 +100,9 @@ class SettingsRepository(private val context: Context) {
         val fuelType = stringPreferencesKey("fuel_type")
         val aspiration = stringPreferencesKey("aspiration")
         val baselineJson = stringPreferencesKey("baseline_json")
+        val vehicleProfiles = stringPreferencesKey("vehicle_profiles")
+        val profileVehicleKey = stringPreferencesKey("profile_vehicle_key")
+        val includeVinInReports = booleanPreferencesKey("include_vin_in_reports")
     }
 
     val settings: Flow<AppSettings> = context.settingsStore.data.map { it.toSettings() }
@@ -93,16 +114,28 @@ class SettingsRepository(private val context: Context) {
     }
 
     private fun Preferences.toSettings(): AppSettings {
-        val dashboardPids = this[Keys.dashboardPids]
+        val legacyPids = this[Keys.dashboardPids]
             ?.split(',')
             ?.mapNotNull { it.trim().toIntOrNull(16) }
             ?.takeIf { it.isNotEmpty() }
             ?.let(::migrateDashboardPids)
         // Installs from before automatic selection stored the old fixed default; treat it as auto.
-        val dashboardAuto = this[Keys.dashboardAuto]
-            ?: (dashboardPids == null ||
-                dashboardPids == LegacyDefaultDashboardPids ||
-                dashboardPids == DefaultDashboardPids)
+        val legacyAuto = this[Keys.dashboardAuto]
+            ?: (legacyPids == null ||
+                legacyPids == LegacyDefaultDashboardPids ||
+                legacyPids == DefaultDashboardPids)
+        val dashboards = this[Keys.dashboards]
+            ?.let { runCatching { json.decodeFromString<List<DashboardConfig>>(it) }.getOrNull() }
+            ?.takeIf { it.isNotEmpty() }
+            ?: listOf(
+                DefaultDashboardConfig.copy(
+                    pids = legacyPids ?: DefaultDashboardPids,
+                    automatic = legacyAuto,
+                ),
+            )
+        val activeDashboardId = this[Keys.activeDashboardId]
+            ?.takeIf { id -> dashboards.any { it.id == id } }
+            ?: dashboards.first().id
 
         return AppSettings(
             unitSystem = this[Keys.unitSystem]
@@ -116,8 +149,8 @@ class SettingsRepository(private val context: Context) {
             tcpHost = this[Keys.tcpHost] ?: "192.168.0.10",
             tcpPort = this[Keys.tcpPort] ?: 35000,
             usbBaud = this[Keys.usbBaud] ?: 38400,
-            dashboardPids = dashboardPids ?: DefaultDashboardPids,
-            dashboardAuto = dashboardAuto,
+            dashboards = dashboards,
+            activeDashboardId = activeDashboardId,
             customPids = this[Keys.customPids]
                 ?.let { runCatching { json.decodeFromString<List<CustomPid>>(it) }.getOrNull() }
                 ?: emptyList(),
@@ -128,6 +161,11 @@ class SettingsRepository(private val context: Context) {
             aspiration = this[Keys.aspiration]
                 ?.let { runCatching { Aspiration.valueOf(it) }.getOrNull() } ?: Aspiration.UNKNOWN,
             baselineJson = this[Keys.baselineJson],
+            vehicleProfiles = this[Keys.vehicleProfiles]
+                ?.let { runCatching { json.decodeFromString<Map<String, VehicleProfileEntry>>(it) }.getOrNull() }
+                ?: emptyMap(),
+            profileVehicleKey = this[Keys.profileVehicleKey] ?: "unknown",
+            includeVinInReports = this[Keys.includeVinInReports] ?: false,
         )
     }
 
@@ -140,8 +178,8 @@ class SettingsRepository(private val context: Context) {
         this[Keys.tcpHost] = settings.tcpHost
         this[Keys.tcpPort] = settings.tcpPort
         this[Keys.usbBaud] = settings.usbBaud
-        this[Keys.dashboardPids] = settings.dashboardPids.joinToString(",") { it.toString(16) }
-        this[Keys.dashboardAuto] = settings.dashboardAuto
+        this[Keys.dashboards] = json.encodeToString(settings.dashboards)
+        this[Keys.activeDashboardId] = settings.activeDashboardId
         this[Keys.customPids] = json.encodeToString(settings.customPids)
         settings.lastVin?.let { this[Keys.lastVin] = it }
         this[Keys.shopName] = settings.shopName
@@ -152,5 +190,8 @@ class SettingsRepository(private val context: Context) {
         } else {
             remove(Keys.baselineJson)
         }
+        this[Keys.vehicleProfiles] = json.encodeToString(settings.vehicleProfiles)
+        this[Keys.profileVehicleKey] = settings.profileVehicleKey
+        this[Keys.includeVinInReports] = settings.includeVinInReports
     }
 }

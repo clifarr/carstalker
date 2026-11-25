@@ -126,6 +126,14 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
             }
         }
 
+        if (report.readAt > 0 && System.currentTimeMillis() - report.readAt > 10 * 60_000) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "This scan is over 10 minutes old. Read again before acting on it.",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.warning,
+            )
+        }
         if (!connected) {
             Spacer(Modifier.height(14.dp))
             StalkerCard(accent = stalker.warning) {
@@ -191,6 +199,12 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
         if (monitors.isNotEmpty()) {
             Spacer(Modifier.height(22.dp))
             SectionHeader("Readiness monitors")
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Not ready is not a fault. Monitors need a drive cycle after a battery disconnect or code clear.",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.muted,
+            )
             Spacer(Modifier.height(10.dp))
             StalkerCard {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -306,7 +320,7 @@ fun CodesScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
             text = {
                 Text(
                     "This turns off the check-engine light, erases stored and pending codes, and resets readiness monitors. " +
-                        "Only clear codes after the underlying fault is repaired — an emissions test will fail while monitors are incomplete.",
+                        "Only clear codes after the underlying fault is repaired — an emissions inspection will fail while monitors are incomplete.",
                 )
             },
             confirmButton = {
@@ -613,20 +627,41 @@ private fun Mode06Card(
             if (report.results.isEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    when {
-                        report.loading -> "Reading monitor results. This can take a minute on an ELM327."
-                        report.readAt > 0 -> "This ECU did not report any Mode 06 tests. Not every vehicle implements them."
-                        else -> "No results yet. Mode 06 exposes catalyst, O2, EVAP and misfire margins that a code scan cannot show."
+                    when (report.state) {
+                        com.carstalker.core.obd.MonitorDataState.NOT_REQUESTED ->
+                            "Not checked. Mode 06 exposes catalyst, O2, EVAP and misfire margins that a code scan cannot show. Reading it is optional and can be slow."
+                        com.carstalker.core.obd.MonitorDataState.IN_PROGRESS ->
+                            "Reading monitor results. This can take a minute on an ELM327."
+                        com.carstalker.core.obd.MonitorDataState.UNSUPPORTED ->
+                            "This ECU does not advertise any Mode 06 monitor tests."
+                        com.carstalker.core.obd.MonitorDataState.FAILED_TO_READ ->
+                            "Mode 06 could not be read. That is not the same as zero failures. ${report.error.orEmpty()}"
+                        com.carstalker.core.obd.MonitorDataState.STALE ->
+                            "The Mode 06 results are from an earlier read. Refresh before relying on them."
+                        com.carstalker.core.obd.MonitorDataState.AVAILABLE ->
+                            "The ECU reported no completed Mode 06 tests."
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = stalker.muted,
+                    color = if (report.state == com.carstalker.core.obd.MonitorDataState.FAILED_TO_READ) stalker.warning else stalker.muted,
                 )
             } else {
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    StatusPill("${report.passes.size} pass", stalker.success)
-                    StatusPill("${report.failures.size} fail", if (report.failures.isEmpty()) stalker.muted else stalker.danger)
-                    StatusPill("${report.inconclusive.size} n/a", stalker.muted)
+                    if (report.countsAvailable) {
+                        StatusPill("${report.passes.size} pass", stalker.success)
+                        StatusPill("${report.failures.size} fail", if (report.failures.isEmpty()) stalker.muted else stalker.danger)
+                        StatusPill("${report.inconclusive.size} n/a", stalker.muted)
+                    } else {
+                        StatusPill("Not checked", stalker.warning)
+                    }
+                }
+                if (!report.countsAvailable) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "These rows are raw monitor data, not a completed pass/fail summary. Read Mode 06 to refresh them.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = stalker.warning,
+                    )
                 }
                 Spacer(Modifier.height(10.dp))
                 report.results.take(40).forEach { result ->
@@ -656,18 +691,22 @@ private fun Mode06Row(result: Mode06Result) {
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                result.label,
+                buildString {
+                    append(result.label)
+                    result.source?.let { append(" · ECU 0x${it.toString(16).uppercase(Locale.US)}") }
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
             StatusPill(
-                when (result.passed) {
-                    true -> "PASS"
-                    false -> "FAIL"
-                    null -> "N/A"
+                when {
+                    !result.mappingTrusted -> "UNVERIFIED"
+                    result.passed == true -> "PASS"
+                    result.passed == false -> "FAIL"
+                    else -> "N/A"
                 },
-                color,
+                if (!result.mappingTrusted) stalker.warning else color,
             )
         }
         Text(
@@ -683,6 +722,13 @@ private fun Mode06Row(result: Mode06Result) {
             style = MaterialTheme.typography.labelSmall,
             color = stalker.muted,
         )
+        if (!result.mappingTrusted) {
+            Text(
+                "The monitor identity and reported unit do not agree. This row is excluded from pass/fail counts. Raw: ${result.raw}",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.warning,
+            )
+        }
     }
 }
 

@@ -50,6 +50,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -109,6 +110,14 @@ fun PdfPreviewScreen(
     val context = LocalContext.current
     val renderer = remember(preview.file) { runCatching { PdfPageRenderer(preview.file) }.getOrNull() }
     var actionError by remember { mutableStateOf<String?>(null) }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var currentPage by remember { mutableIntStateOf(0) }
+    var resetZoomKey by remember { mutableIntStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(listState) {
+        androidx.compose.runtime.snapshotFlow { listState.firstVisibleItemIndex }
+            .collect { currentPage = it }
+    }
     DisposableEffect(renderer) {
         onDispose { renderer?.close() }
     }
@@ -136,6 +145,48 @@ fun PdfPreviewScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
+                    Text(
+                        "VIN is masked unless enabled in Settings.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = stalker.muted,
+                    )
+                }
+            }
+            if (renderer != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "Page ${currentPage + 1} of ${renderer.pageCount}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = stalker.muted,
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    listState.animateScrollToItem((currentPage - 1).coerceAtLeast(0))
+                                }
+                            },
+                            enabled = currentPage > 0,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
+                        ) { Text("Previous", style = MaterialTheme.typography.labelSmall) }
+                        TextButton(
+                            onClick = {
+                                scope.launch {
+                                    listState.animateScrollToItem((currentPage + 1).coerceAtMost(renderer.pageCount - 1))
+                                }
+                            },
+                            enabled = currentPage < renderer.pageCount - 1,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
+                        ) { Text("Next", style = MaterialTheme.typography.labelSmall) }
+                        TextButton(
+                            onClick = { resetZoomKey++ },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
+                        ) { Text("Fit", style = MaterialTheme.typography.labelSmall) }
+                    }
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -151,12 +202,13 @@ fun PdfPreviewScreen(
                     }
                 } else {
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                     ) {
                         items(renderer.pageCount) { index ->
-                            PdfPageItem(renderer, index, pageWidthPx)
+                            PdfPageItem(renderer, index, pageWidthPx, resetZoomKey)
                         }
                     }
                 }
@@ -210,7 +262,7 @@ fun PdfPreviewScreen(
 }
 
 @Composable
-private fun PdfPageItem(renderer: PdfPageRenderer, index: Int, widthPx: Int) {
+private fun PdfPageItem(renderer: PdfPageRenderer, index: Int, widthPx: Int, resetZoomKey: Int) {
     val stalker = LocalStalkerColors.current
     // Render the fit view above screen resolution so the first zoom step is not blurry.
     val renderWidthPx = remember(widthPx) { (widthPx * SHARP_RENDER_FACTOR).roundToInt() }
@@ -237,6 +289,7 @@ private fun PdfPageItem(renderer: PdfPageRenderer, index: Int, widthPx: Int) {
                     index = index,
                     bitmap = page,
                     contentDescription = "Report page ${index + 1}",
+                    resetZoomKey = resetZoomKey,
                     modifier = Modifier.fillMaxWidth().aspectRatio(PdfPageRenderer.PAGE_ASPECT_RATIO),
                 )
                 failed -> Box(
@@ -284,9 +337,11 @@ private fun PdfPageView(
     index: Int,
     bitmap: ImageBitmap,
     contentDescription: String,
+    resetZoomKey: Int,
     modifier: Modifier = Modifier,
 ) {
     var pageZoom by remember { mutableStateOf(PageZoom()) }
+    androidx.compose.runtime.LaunchedEffect(resetZoomKey) { pageZoom = PageZoom() }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var animationJob by remember { mutableStateOf<Job?>(null) }
     var detail by remember { mutableStateOf<ImageBitmap?>(null) }

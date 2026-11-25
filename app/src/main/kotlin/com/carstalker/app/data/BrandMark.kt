@@ -12,6 +12,8 @@ import androidx.core.graphics.toColorInt
 import com.carstalker.app.R
 import android.content.res.XmlResourceParser
 import org.xmlpull.v1.XmlPullParser
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 /**
  * The CarStalker mark parsed from [R.drawable.ic_brand_mark] and drawn as paths.
@@ -30,6 +32,7 @@ internal class BrandMark private constructor(
         val fillColor: Int,
         val strokeColor: Int,
         val strokeWidth: Float,
+        val strokeScale: Float,
         val strokeCap: Paint.Cap,
         val strokeJoin: Paint.Join,
     )
@@ -52,7 +55,7 @@ internal class BrandMark private constructor(
             }
             if (Color.alpha(shape.strokeColor) > 0 && shape.strokeWidth > 0f) {
                 strokePaint.color = shape.strokeColor
-                strokePaint.strokeWidth = shape.strokeWidth * scale
+                strokePaint.strokeWidth = shape.strokeWidth * shape.strokeScale * scale
                 strokePaint.strokeCap = shape.strokeCap
                 strokePaint.strokeJoin = shape.strokeJoin
                 canvas.drawPath(path, strokePaint)
@@ -83,7 +86,7 @@ internal class BrandMark private constructor(
                             stack.add(Matrix(matrix))
                             applyGroup(parser, matrix)
                         }
-                        "path" -> readShape(context, parser)?.let { shape ->
+                        "path" -> readShape(context, parser, matrix)?.let { shape ->
                             shape.path.transform(matrix)
                             shapes += shape
                         }
@@ -111,7 +114,7 @@ internal class BrandMark private constructor(
             matrix.postTranslate(pivotX + translateX, pivotY + translateY)
         }
 
-        private fun readShape(context: Context, parser: XmlResourceParser): Shape? {
+        private fun readShape(context: Context, parser: XmlResourceParser, matrix: Matrix): Shape? {
             val data = parser.getAttributeValue(ANDROID_NS, "pathData") ?: return null
             val path = PathParser.createPathFromPathData(data) ?: return null
             return Shape(
@@ -119,6 +122,7 @@ internal class BrandMark private constructor(
                 fillColor = resolveColor(parser.getAttributeValue(ANDROID_NS, "fillColor")),
                 strokeColor = resolveColor(parser.getAttributeValue(ANDROID_NS, "strokeColor")),
                 strokeWidth = parser.getAttributeValue(ANDROID_NS, "strokeWidth")?.toFloatOrNull() ?: 0f,
+                strokeScale = matrixScale(matrix),
                 strokeCap = when (parser.getAttributeValue(ANDROID_NS, "strokeLineCap")) {
                     "round" -> Paint.Cap.ROUND
                     "square" -> Paint.Cap.SQUARE
@@ -130,6 +134,17 @@ internal class BrandMark private constructor(
                     else -> Paint.Join.MITER
                 },
             )
+        }
+
+        /** Uniform scale of the current group, so group-scaled strokes stay proportional. */
+        private fun matrixScale(matrix: Matrix): Float {
+            val values = FloatArray(9)
+            matrix.getValues(values)
+            val determinant =
+                values[Matrix.MSCALE_X] * values[Matrix.MSCALE_Y] -
+                    values[Matrix.MSKEW_X] * values[Matrix.MSKEW_Y]
+            val scale = sqrt(abs(determinant))
+            return if (scale > 0f) scale else 1f
         }
 
         private fun resolveColor(value: String?): Int {

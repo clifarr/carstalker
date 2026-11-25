@@ -41,6 +41,17 @@ class ObdDecodingTest {
     }
 
     @Test
+    fun `decodes throttle and pedal channels`() {
+        // SAE J1979: A * 100 / 255 for PIDs 11, 45, 47, 49 and 4A.
+        assertEquals(0.0, PidCatalog.find(0x11)!!.decode(intArrayOf(0x00))!!, 0.001)
+        assertEquals(100.0, PidCatalog.find(0x11)!!.decode(intArrayOf(0xFF))!!, 0.001)
+        assertEquals(50.2, PidCatalog.find(0x11)!!.decode(intArrayOf(0x80))!!, 0.01)
+        assertEquals(29.8, PidCatalog.find(0x45)!!.decode(intArrayOf(0x4C))!!, 0.01)
+        assertEquals(29.8, PidCatalog.find(0x47)!!.decode(intArrayOf(0x4C))!!, 0.01)
+        assertEquals(29.8, PidCatalog.find(0x49)!!.decode(intArrayOf(0x4C))!!, 0.01)
+    }
+
+    @Test
     fun `decodes supported pid bitmap`() {
         val supported = PidSupport.decode(0x00, intArrayOf(0xBE, 0x1F, 0xA8, 0x13))
         assertTrue(0x01 in supported)

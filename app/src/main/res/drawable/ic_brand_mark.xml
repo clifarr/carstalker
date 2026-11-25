@@ -14,16 +14,35 @@
     <path
         android:pathData="M0,0h72v72h-72z"
         android:fillColor="#0B0E12" />
+
+    <!-- Soft lens glow, then the handle. The glass and ring hide its inner end. -->
+    <path
+        android:pathData="M32,32 m-21,0 a21,21 0 1,0 42,0 a21,21 0 1,0 -42,0"
+        android:fillColor="#1FC6FF3D" />
+    <path
+        android:pathData="M45.08,45.08 L57.81,57.81"
+        android:strokeColor="#C6FF3D"
+        android:strokeWidth="7.0"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent" />
+    <path
+        android:pathData="M44.0,42.0 L56.5,54.5"
+        android:strokeColor="#8FBF1F"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="@android:color/transparent" />
+
+    <!-- Lens glass. The car is scaled down to leave a clean rim inside the ring. -->
+    <path
+        android:pathData="M32,32 m-17.5,0 a17.5,17.5 0 1,0 35,0 a17.5,17.5 0 1,0 -35,0"
+        android:fillColor="#10161D" />
     <group
-        android:translateX="-18"
-        android:translateY="-18">
-        <!-- Lens glass, lifted from the background -->
-        <path
-                android:pathData="M49,45 m-20,0 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0"
-                android:fillColor="#10161D" />
-        <path
-                android:pathData="M49,45 m-24,0 a24,24 0 1,0 48,0 a24,24 0 1,0 -48,0"
-                android:fillColor="#1FC6FF3D" />
+        android:pivotX="49"
+        android:pivotY="45"
+        android:scaleX="0.82"
+        android:scaleY="0.82"
+        android:translateX="-17"
+        android:translateY="-13">
         <path
                 android:pathData="M33.2,52.6 L33.2,47.2 Q33.2,45.4 34.9,45.0 L38.6,44.2 L42.1,38.2 Q43.0,36.7 44.8,36.7 L50.6,36.7 Q52.4,36.7 53.6,38.0 L58.9,43.4 L63.3,44.4 Q65.0,44.8 65.3,46.5 L65.6,52.6 Z"
                 android:fillColor="#EAF0F5" />
@@ -63,30 +82,20 @@
                 android:strokeLineJoin="round"
                 android:fillColor="@android:color/transparent" />
         <path
-                android:pathData="M49,45 m-20,0 a20,20 0 1,0 40,0 a20,20 0 1,0 -40,0"
-                android:strokeColor="#C6FF3D"
-                android:strokeWidth="4.6"
-                android:fillColor="@android:color/transparent" />
-        <path
                 android:pathData="M34.6,37.6 A16.5,16.5 0 0,1 44.2,28.4"
                 android:strokeColor="#66EAF0F5"
                 android:strokeWidth="2.2"
                 android:strokeLineCap="round"
                 android:fillColor="@android:color/transparent" />
-        <path
-                android:pathData="M63.2,59.2 L74.2,70.2"
-                android:strokeColor="#C6FF3D"
-                android:strokeWidth="7.2"
-                android:strokeLineCap="round"
-                android:fillColor="@android:color/transparent" />
-        <path
-                android:pathData="M64.8,60.8 L72.4,68.4"
-                android:strokeColor="#8FBF1F"
-                android:strokeWidth="2.0"
-                android:strokeLineCap="round"
-                android:fillColor="@android:color/transparent" />
-        <path
-                android:pathData="M62.5,24.8 L63.4,27.6 L66.2,28.5 L63.4,29.4 L62.5,32.2 L61.6,29.4 L58.8,28.5 L61.6,27.6 Z"
-                android:fillColor="#EAF0F5" />
     </group>
+
+    <!-- Ring last so it covers the handle joint. -->
+    <path
+        android:pathData="M32,32 m-17.5,0 a17.5,17.5 0 1,0 35,0 a17.5,17.5 0 1,0 -35,0"
+        android:strokeColor="#C6FF3D"
+        android:strokeWidth="5.0"
+        android:fillColor="@android:color/transparent" />
+    <path
+        android:pathData="M49,9.3 L49.9,12.1 L52.7,13.0 L49.9,13.9 L49,16.7 L48.1,13.9 L45.3,13.0 L48.1,12.1 Z"
+        android:fillColor="#EAF0F5" />
 </vector>

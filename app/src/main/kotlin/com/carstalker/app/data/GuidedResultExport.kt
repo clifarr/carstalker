@@ -58,6 +58,8 @@ object GuidedResultExport {
                 gaps = it.gaps,
                 metrics = it.metrics,
                 notes = it.notes,
+                outcome = it.outcome.name,
+                stimulusObserved = it.stimulusObserved,
             )
         },
         quality = ExportQuality(
@@ -72,6 +74,15 @@ object GuidedResultExport {
         nextSteps = nextSteps,
         generatedAt = generatedAt,
         skippedStages = stagesSkipped,
+        vehicleKeyMasked = vehicleKey.takeIf { it.isNotBlank() }?.let {
+            if (it.length <= 4) "••••" else "••••••••••${it.takeLast(4)}"
+        },
+        adapterName = adapterName,
+        protocolName = protocolName,
+        isDemo = isDemo,
+        scanReadAt = scanReadAt,
+        dataAgeMs = dataAgeMs,
+        evidenceQuality = quality.evidenceQuality,
     )
 }
 
@@ -96,6 +107,13 @@ data class GuidedExport(
     val nextSteps: List<String>,
     val generatedAt: Long,
     val skippedStages: List<String>,
+    val vehicleKeyMasked: String? = null,
+    val adapterName: String? = null,
+    val protocolName: String? = null,
+    val isDemo: Boolean = false,
+    val scanReadAt: Long = 0L,
+    val dataAgeMs: Long = 0L,
+    val evidenceQuality: String = "",
 )
 
 @Serializable
@@ -137,6 +155,8 @@ data class ExportStage(
     val gaps: Int,
     val metrics: Map<String, Double>,
     val notes: List<String>,
+    val outcome: String = "VALID",
+    val stimulusObserved: Boolean? = null,
 )
 
 @Serializable

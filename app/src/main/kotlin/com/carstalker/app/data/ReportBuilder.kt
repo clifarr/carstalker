@@ -31,6 +31,8 @@ object ReportBuilder {
         report: DtcReport,
         wizardResult: WizardResult? = null,
         guidedResults: List<GuidedResult> = emptyList(),
+        maskVin: Boolean = false,
+        isDemo: Boolean = false,
     ): DiagnosticReport {
         val modules = report.modules.map { module ->
             val byCode = LinkedHashMap<String, Pair<Dtc, MutableList<String>>>()
@@ -76,11 +78,14 @@ object ReportBuilder {
                 unit = result.unit,
                 min = result.min?.let { DiagnosticReport.formatValue(it, 2) },
                 max = result.max?.let { DiagnosticReport.formatValue(it, 2) },
-                state = when (result.passed) {
-                    true -> "PASS"
-                    false -> "FAIL"
-                    null -> "NOT COMPLETED"
+                state = when {
+                    !result.mappingTrusted -> "UNVERIFIED"
+                    result.passed == true -> "PASS"
+                    result.passed == false -> "FAIL"
+                    else -> "NOT COMPLETED"
                 },
+                mappingTrusted = result.mappingTrusted,
+                raw = result.raw.takeIf { !result.mappingTrusted },
             )
         }
 
@@ -101,6 +106,7 @@ object ReportBuilder {
                     title = wizard.title,
                     summary = wizard.summary,
                     confidence = wizard.confidence.label,
+                    ruleVersion = null,
                     causes = wizard.causes.map { cause ->
                         ReportWizardCause(
                             title = cause.title,
@@ -120,6 +126,7 @@ object ReportBuilder {
                 title = guided.title,
                 summary = guided.summary,
                 confidence = guided.confidence.label,
+                ruleVersion = guided.definitionVersion,
                 causes = guided.findings.map { finding ->
                     ReportWizardCause(
                         title = finding.title,
@@ -140,7 +147,9 @@ object ReportBuilder {
             appVersion = appVersion,
             shopName = shopName.takeIf { it.isNotBlank() },
             vehicle = ReportVehicle(
-                vin = identity.vin,
+                vin = identity.vin?.let { vin ->
+                    if (maskVin) "••••••••••${vin.takeLast(4)}" else vin
+                },
                 year = identity.modelYear,
                 make = identity.make,
             ),
@@ -149,8 +158,37 @@ object ReportBuilder {
             modules = modules,
             freezeFrames = freezeFrames,
             mode06 = mode06,
+            mode06Note = when (report.mode06.state) {
+                com.carstalker.core.obd.MonitorDataState.AVAILABLE -> null
+                com.carstalker.core.obd.MonitorDataState.UNSUPPORTED ->
+                    "This ECU does not advertise Mode 06 monitor tests."
+                com.carstalker.core.obd.MonitorDataState.FAILED_TO_READ ->
+                    "Mode 06 could not be read. That is not the same as zero failures."
+                com.carstalker.core.obd.MonitorDataState.STALE ->
+                    "Mode 06 results are from an earlier read. Refresh before relying on them."
+                com.carstalker.core.obd.MonitorDataState.IN_PROGRESS ->
+                    "Mode 06 was being read when this report was generated."
+                com.carstalker.core.obd.MonitorDataState.NOT_REQUESTED ->
+                    "Mode 06 was not read for this scan. That is not the same as zero failures."
+            },
             monitors = monitors,
             wizardResults = wizardResults,
+            notes = buildString {
+                if (maskVin) append("VIN masked. Export the full VIN only with the vehicle owner's agreement. ")
+                if (report.readAt > 0) {
+                    append("Code scan: ")
+                    append(java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(report.readAt)))
+                    append(". ")
+                }
+                append(
+                    if (report.mode06.countsAvailable) {
+                        "Mode 06: read, ${report.mode06.failures.size} failure(s)."
+                    } else {
+                        "Mode 06: not checked; absent results are not zero failures."
+                    },
+                )
+            },
+            isDemo = isDemo,
         )
     }
 }

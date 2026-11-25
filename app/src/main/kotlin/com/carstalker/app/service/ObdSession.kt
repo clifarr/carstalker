@@ -39,7 +39,9 @@ import com.carstalker.core.guided.VehicleCapabilities
 import com.carstalker.core.guided.VehicleProfile
 import com.carstalker.core.guided.terminal
 import com.carstalker.core.obd.FreezeFrame
+import com.carstalker.core.obd.LiveDataFreshness
 import com.carstalker.core.obd.Mode06Report
+import com.carstalker.core.obd.MonitorDataState
 import com.carstalker.core.obd.MonitorStatus
 import com.carstalker.core.obd.ObdMode
 import com.carstalker.core.obd.Pid
@@ -80,7 +82,28 @@ data class LiveSnapshot(
     val values: Map<Int, Double> = emptyMap(),
     /** Measured by the adapter itself (`ATRV`), refreshed with every poll cycle. */
     val adapterVoltage: Double? = null,
+    /** Wall-clock time of the most recent accepted sample, including adapter voltage. */
+    val lastUpdatedAt: Long = 0L,
+    /** Wall-clock time of the most recent ECU (non-adapter) sample; 0 until one arrives. */
+    val lastEcuAt: Long = 0L,
+    /** The adapter is still connected but the ECU stopped answering. */
+    val vehicleOffline: Boolean = false,
+    /**
+     * The active dashboard polls at least one ECU parameter. When false (an adapter-only
+     * dashboard), [lastEcuAt] is meaningless and [lastUpdatedAt] is the freshness source.
+     */
+    val ecuExpected: Boolean = false,
 )
+
+/**
+ * Wall-clock time that proves the active dashboard is still live.
+ *
+ * An adapter-only dashboard never receives an ECU sample, so a leftover [LiveSnapshot.lastEcuAt]
+ * from an earlier dashboard must not be used: it would keep the status on "Delayed" while
+ * adapter voltage streams.
+ */
+fun LiveSnapshot.freshnessAt(): Long =
+    if (ecuExpected) lastEcuAt.takeIf { it > 0 } ?: lastUpdatedAt else lastUpdatedAt
 
 data class DtcReport(
     val modules: List<EcuDtcReport> = emptyList(),
@@ -112,6 +135,9 @@ fun DtcReport.toScanContext(): ScanContext = ScanContext(
     freezeFrameCount = freezeFrames.size,
     mode06Tests = mode06.results.size,
     mode06Failures = mode06.failures.size,
+    mode06State = mode06.state,
+    mode06ReadAt = mode06.readAt,
+    readAt = readAt,
 )
 
 /**
@@ -135,6 +161,11 @@ class ObdSession(
     private val scheduler = PollScheduler()
     private val captureMutex = Mutex()
     private val lastValues = mutableMapOf<Int, Double>()
+    private val freshness = LiveDataFreshness()
+
+    /** Parameter whose detail view is open; requested on every cycle while it is set. */
+    @Volatile
+    private var focusPid: Int? = null
 
     @Volatile
     private var guidedCancelRequested = false
@@ -186,11 +217,22 @@ class ObdSession(
         _notice.value = null
     }
 
+    /**
+     * Prioritises one parameter while its detail view is open, so the enlarged gauge refreshes
+     * on every poll cycle instead of waiting for its scheduled turn. Synthetic adapter
+     * measurements (negative ids) have no OBD request and are ignored.
+     */
+    fun setFocusPid(pidId: Int?) {
+        focusPid = pidId?.takeIf { it >= 0 }
+    }
+
     suspend fun connect(transportFactory: () -> Transport) {
         if (_state.value is ConnectionState.Ready || _state.value is ConnectionState.Connecting) return
         Elm327Client.DEBUG = BuildConfig.DEBUG
         Elm327Client.trace = { android.util.Log.d("Elm327", it) }
         _state.value = ConnectionState.Connecting
+        // Never carry the previous session's readings into a new connection attempt.
+        _live.value = LiveSnapshot()
         try {
             val newTransport = withContext(Dispatchers.IO) {
                 transportFactory().also { it.connect() }
@@ -259,6 +301,7 @@ class ObdSession(
         stopRecording()
         closeTransport()
         _state.value = ConnectionState.Disconnected
+        freshness.reset()
         _live.value = LiveSnapshot()
         _samples.value = LiveSnapshot()
         _identity.value = VehicleIdentity()
@@ -301,13 +344,22 @@ class ObdSession(
     /** Reads Mode 06 on demand: it is slow on an ELM327 and not needed for a quick code check. */
     suspend fun readMode06() {
         val obd = obd ?: return
-        _dtcReport.value = _dtcReport.value.copy(mode06 = _dtcReport.value.mode06.copy(loading = true))
+        _dtcReport.value = _dtcReport.value.copy(
+            mode06 = _dtcReport.value.mode06.copy(
+                loading = true,
+                state = MonitorDataState.IN_PROGRESS,
+            ),
+        )
         try {
             val report = withContext(Dispatchers.IO) { obd.readMode06() }
             _dtcReport.value = _dtcReport.value.copy(mode06 = report)
         } catch (t: Throwable) {
             _dtcReport.value = _dtcReport.value.copy(
-                mode06 = _dtcReport.value.mode06.copy(loading = false),
+                mode06 = _dtcReport.value.mode06.copy(
+                    loading = false,
+                    state = MonitorDataState.FAILED_TO_READ,
+                    error = t.message ?: "Could not read Mode 06",
+                ),
             )
             _notice.value = t.message ?: "Could not read Mode 06"
         }
@@ -468,6 +520,8 @@ class ObdSession(
                     consecutiveFailures = if (answered > 0) 0 else consecutiveFailures + 1
                     if (consecutiveFailures >= 12) {
                         connectionLost = true
+                        runner.connectionLost("The adapter stopped responding.")
+                        onSnapshot(runner.snapshot(now))
                         break
                     }
                     delay(20)
@@ -495,6 +549,7 @@ class ObdSession(
                 adapterVoltageUsed = captures.any { AnalysisSupport.usesAdapterVoltage(it) },
                 safetyStopReason = runner.safetyReason,
                 cancelled = runner.cancelled,
+                connectionLost = connectionLost,
                 scan = scan,
                 baseline = baseline,
                 vehicleKey = vehicleKey,
@@ -558,6 +613,9 @@ class ObdSession(
             appVersion = BuildConfig.VERSION_NAME,
             columns = columns,
             startedAt = captures.minOf { it.capture.startedAt },
+            kind = "guided",
+            label = definition.title,
+            isDemo = ready?.transportName?.contains("Demo") == true,
         )
         try {
             for (stage in captures) {
@@ -615,6 +673,9 @@ class ObdSession(
             protocol = ready?.adapter?.protocolName,
             appVersion = BuildConfig.VERSION_NAME,
             columns = recordingColumns(settingsFlow.value),
+            kind = "drive",
+            label = null,
+            isDemo = ready?.transportName?.contains("Demo") == true,
         )
         _recording.value = true
         _notice.value = "Recording started"
@@ -631,29 +692,55 @@ class ObdSession(
     private fun startPolling() {
         pollJob?.cancel()
         pollJob = scope.launch {
-            var consecutiveFailures = 0
+            var adapterFailures = 0
+            freshness.start(System.currentTimeMillis())
             while (isActive) {
                 val obd = obd ?: break
                 val current = settingsFlow.value
-                val pids = buildPollList(current)
+                val dashboardRequested = requestedPollPids(current)
+                val focus = focusPid
+                val requested = if (focus != null && focus !in dashboardRequested) {
+                    dashboardRequested + focus
+                } else {
+                    dashboardRequested
+                }
+                val ecuExpected = requested.isNotEmpty()
+                val pids = buildPollList(current, requested, focus)
                 val started = System.currentTimeMillis()
 
-                // Voltage is read every cycle, even when nothing else is scheduled: it is the
-                // one value that proves the adapter is still alive.
+                // Voltage is read every cycle, even when nothing else is scheduled. It proves the
+                // adapter is alive, not the ECU: after the ignition is switched off the adapter
+                // keeps answering ATRV while the engine values stop. Never fall back to the last
+                // voltage on a failed read, or a dead adapter would look alive forever.
                 val voltage = try {
                     obd.readVoltage()
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Throwable) {
-                    _live.value.adapterVoltage
+                    null
                 }
                 if (voltage != null) {
                     lastValues[LiveKeys.ADAPTER_VOLTAGE] = voltage
-                    _live.value = LiveSnapshot(lastValues.toMap(), voltage)
+                    publishLive(voltage, ecuExpected)
                 }
 
                 if (pids.isEmpty()) {
+                    // A focus dashboard can legitimately request no OBD PIDs. ATRV is still a
+                    // real sample, so publish it to charts and recordings instead of skipping.
+                    if (voltage != null) {
+                        val now = System.currentTimeMillis()
+                        val cycleValues = mapOf(LiveKeys.ADAPTER_VOLTAGE to voltage)
+                        _samples.value = LiveSnapshot(cycleValues, voltage, now)
+                        runCatching { writer?.append(now, cycleValues) }
+                    }
+                    publishLive(voltage, ecuExpected, sampled = false)
+                    adapterFailures = if (voltage == null) adapterFailures + 1 else 0
+                    if (adapterFailures >= ADAPTER_FAILURE_LIMIT) {
+                        loseConnection()
+                        break
+                    }
                     scheduler.advance()
+                    retrySilentIfDue(ecuExpected)
                     val elapsedIdle = System.currentTimeMillis() - started
                     delay((current.pollIntervalMs - elapsedIdle).coerceAtLeast(50))
                     continue
@@ -668,39 +755,44 @@ class ObdSession(
                     } catch (_: Throwable) {
                         null
                     }
-                    scheduler.record(pid.id, value != null)
-                    if (value != null && value.isFinite()) {
+                    val answered = value != null && value.isFinite()
+                    scheduler.record(pid.id, answered)
+                    val answeredAt = System.currentTimeMillis()
+                    if (answered) {
                         values[pid.id] = value
                         lastValues[pid.id] = value
-                        // Publish per parameter so a gauge moves the moment its value arrives
-                        // instead of waiting for the whole cycle to finish.
-                        _live.value = LiveSnapshot(lastValues.toMap(), voltage)
+                        freshness.sample(answeredAt)
+                    } else {
+                        freshness.miss(answeredAt)
                     }
+                    // Check after every exchange, not once per cycle: the dashboard must stop
+                    // looking live within one adapter round-trip of the ECU going quiet.
+                    publishLive(voltage, ecuExpected, sampled = answered)
                 }
                 val now = System.currentTimeMillis()
                 if (values.isNotEmpty() || voltage != null) {
-                    consecutiveFailures = 0
+                    adapterFailures = 0
                     val cycleValues = values.toMutableMap()
                     voltage?.let { cycleValues[LiveKeys.ADAPTER_VOLTAGE] = it }
-                    _samples.value = LiveSnapshot(cycleValues, voltage)
+                    _samples.value = LiveSnapshot(cycleValues, voltage, now)
                     val logValues = cycleValues
                     runCatching { writer?.append(now, logValues) }
                 } else {
-                    consecutiveFailures++
-                    if (consecutiveFailures >= 6) {
-                        _state.value = ConnectionState.Error("Lost communication with the vehicle")
-                        closeTransport()
+                    adapterFailures++
+                    if (adapterFailures >= ADAPTER_FAILURE_LIMIT) {
+                        loseConnection()
                         break
                     }
                 }
+                publishLive(voltage, ecuExpected, sampled = false)
                 scheduler.advance()
-                // Every 30 cycles (~10 s) let retired parameters prove themselves again.
-                if (scheduler.cycle % RETRY_SILENT_EVERY == 0L) scheduler.retrySilent()
+                retrySilentIfDue(ecuExpected)
                 val elapsed = System.currentTimeMillis() - started
                 if (BuildConfig.DEBUG) {
                     android.util.Log.d(
                         "ObdSession",
-                        "cycle ${elapsed}ms, ${values.size}/${pids.size} values, voltage=$voltage",
+                        "cycle ${elapsed}ms, ${values.size}/${pids.size} values, voltage=$voltage, " +
+                            "offline=${freshness.isOffline(now, ecuExpected)}",
                     )
                 }
                 // The interval is a floor between cycles; a long cycle simply starts the next one immediately.
@@ -709,19 +801,70 @@ class ObdSession(
         }
     }
 
-    private fun buildPollList(current: AppSettings): List<Pid> {
+    /**
+     * Publishes what the dashboard should show. When the ECU has been silent for the freshness
+     * window the last engine values are dropped instead of being republished with a new
+     * timestamp: the adapter answering ATRV must not keep a switched-off engine looking live.
+     */
+    private fun publishLive(voltage: Double?, ecuExpected: Boolean, sampled: Boolean = voltage != null) {
+        // A cancelled poll loop can finish its blocking read after a disconnect. Never let that
+        // late snapshot put values back on a dashboard that is already offline.
+        if (_state.value !is ConnectionState.Ready) return
+        val now = System.currentTimeMillis()
+        val offline = freshness.isOffline(now, ecuExpected)
+        val previous = _live.value
+        if (offline && !previous.vehicleOffline) {
+            // Keep only the adapter measurement. If the ECU answers again, every value must be
+            // re-read before it can appear as live.
+            lastValues.keys.retainAll { it == LiveKeys.ADAPTER_VOLTAGE }
+        }
+        val values = if (offline) {
+            voltage?.let { mapOf(LiveKeys.ADAPTER_VOLTAGE to it) }.orEmpty()
+        } else {
+            lastValues.toMap()
+        }
+        _live.value = LiveSnapshot(
+            values = values,
+            adapterVoltage = voltage ?: previous.adapterVoltage,
+            lastUpdatedAt = if (sampled) now else previous.lastUpdatedAt,
+            lastEcuAt = freshness.lastSampleAt,
+            vehicleOffline = offline,
+            ecuExpected = ecuExpected,
+        )
+    }
+
+    /**
+     * Gives retired parameters another chance. Normally this happens every
+     * [RETRY_SILENT_EVERY] cycles, but while the ECU is offline every cycle is a recovery
+     * probe: the engine may be started again at any moment, and the dashboard must come back
+     * without waiting for a slow user-chosen poll interval to run out its retry count.
+     */
+    private fun retrySilentIfDue(ecuExpected: Boolean) {
+        val offline = freshness.isOffline(System.currentTimeMillis(), ecuExpected)
+        val every = if (offline) 1L else RETRY_SILENT_EVERY
+        if (scheduler.cycle % every == 0L) scheduler.retrySilent()
+    }
+
+    /**
+     * Every OBD parameter the active dashboard wants, before the poll scheduler thins the list.
+     * This is what tells the freshness monitor whether ECU data is expected at all: a
+     * voltage-only dashboard must not be reported as an offline vehicle.
+     */
+    private fun requestedPollPids(current: AppSettings): List<Int> {
+        val dashboard = current.activeDashboard
+        val dashboardPids = dashboard.resolvePids(_supportedPids.value)
+        // Poll exactly what the active dashboard shows: its tiles plus the gauges/mini stats when
+        // they are visible. The adapter voltage is read separately with ATRV.
+        val gaugePids = if (dashboard.showGauges) GAUGE_PIDS else emptyList()
+        return (dashboardPids + gaugePids).distinct().filter { it >= 0 }
+    }
+
+    private fun buildPollList(current: AppSettings, requested: List<Int>, priority: Int? = null): List<Pid> {
         val custom = current.customPids
             .filter { it.enabled }
             .mapNotNull { it.toPid() }
             .associateBy { it.id }
-        val dashboard = if (current.dashboardAuto) {
-            recommendedDashboardPids(_supportedPids.value)
-        } else {
-            current.dashboardPids
-        }
-        // Synthetic ids such as the adapter voltage have no OBD PID to poll.
-        val requested = (ESSENTIAL_PIDS + dashboard + custom.keys).distinct().filter { it >= 0 }
-        val scheduled = scheduler.next(requested, _supportedPids.value, exempt = custom.keys)
+        val scheduled = scheduler.next(requested, _supportedPids.value, exempt = custom.keys, priority = priority)
         return scheduled.mapNotNull { id -> custom[id] ?: PidCatalog.find(id) }
     }
 
@@ -730,16 +873,17 @@ class ObdSession(
             .filter { it.enabled }
             .mapNotNull { it.toPid() }
             .associateBy { it.id }
-        val dashboard = if (current.dashboardAuto) {
-            recommendedDashboardPids(_supportedPids.value)
-        } else {
-            current.dashboardPids
-        }
-        val requested = (ESSENTIAL_PIDS + dashboard + custom.keys).distinct()
-        val pids = requested.mapNotNull { id -> custom[id] ?: PidCatalog.find(id) }
+        val pids = requestedPollPids(current).mapNotNull { id -> custom[id] ?: PidCatalog.find(id) }
         return (listOf(AdapterVoltageParam) + pids)
             .distinctBy { it.id }
             .map { LogColumnMeta(it.id, it.name, it.unit) }
+    }
+
+    private fun loseConnection() {
+        _state.value = ConnectionState.Error("Lost communication with the vehicle")
+        _live.value = LiveSnapshot()
+        freshness.reset()
+        closeTransport()
     }
 
     private fun closeTransport() {
@@ -752,10 +896,15 @@ class ObdSession(
     }
 
     private companion object {
-        val ESSENTIAL_PIDS = listOf(0x0C, 0x0D, 0x04, 0x05)
+        /** Values the visible gauges and mini stats need: RPM, speed, load and coolant. */
+        val GAUGE_PIDS = listOf(0x0C, 0x0D, 0x04, 0x05)
 
         /** How often retired parameters are given another chance. */
         const val RETRY_SILENT_EVERY = 30L
+
+        /** Consecutive cycles with no adapter answer and no ECU values before the link is dead. */
+        const val ADAPTER_FAILURE_LIMIT = 6
+
         const val MAX_CAPTURE_POINTS = 20_000
     }
 }

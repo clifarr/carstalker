@@ -42,6 +42,8 @@ object OxygenResponseAnalyzer {
         }
         val idle = stages.firstOrNull { it.stage.stageId == "warm_idle" }
         val response = stages.firstOrNull { it.stage.stageId == "throttle_response" }
+        val responseExercised = response != null &&
+            (response.throttle.range >= 5.0 || response.rpm.range >= 500.0)
         val narrowbandPresent = stages.any { it.narrowband != null }
         val widebandPresent = stages.any { it.wideband != null }
         val downstreamPresent = stages.any { it.downstream != null }
@@ -246,12 +248,13 @@ object OxygenResponseAnalyzer {
             input.cancelled -> DiagnosticStatus.CANCELLED
             findings.any { it.id == "sampling_inadequate" } -> DiagnosticStatus.INCONCLUSIVE
             findings.isNotEmpty() -> DiagnosticStatus.SUSPICIOUS
-            narrowbandPresent && stages.any { (it.narrowband?.switchingCount ?: 0) > 0 } -> DiagnosticStatus.NO_ANOMALY_DETECTED
+            responseExercised && narrowbandPresent && stages.any { (it.narrowband?.switchingCount ?: 0) > 0 } ->
+                DiagnosticStatus.NO_ANOMALY_DETECTED
             widebandPresent && stages.any { it.wideband != null } -> DiagnosticStatus.INCONCLUSIVE
             else -> DiagnosticStatus.INCONCLUSIVE
         }
         val summary = when (status) {
-            DiagnosticStatus.NO_ANOMALY_DETECTED -> "A switching upstream signal was captured. This does not prove the sensor is healthy under every condition."
+            DiagnosticStatus.NO_ANOMALY_DETECTED -> "A switching upstream signal was captured during an observed throttle response. This does not prove the sensor is healthy under every condition."
             DiagnosticStatus.SUSPICIOUS -> "The oxygen-sensor response needs attention. The result lists the competing explanations."
             DiagnosticStatus.SAFETY_STOPPED -> input.safetyStopReason.orEmpty()
             DiagnosticStatus.CANCELLED -> "Test cancelled."
@@ -259,10 +262,13 @@ object OxygenResponseAnalyzer {
         }
 
         val stageSummaries = stages.map { analysis ->
+            val isResponse = analysis.stage.stageId == "throttle_response"
             AnalysisSupport.stageSummary(
                 stage = analysis.stage,
-                valid = analysis.valid,
+                valid = if (isResponse) analysis.valid && responseExercised else analysis.valid,
                 keyPid = Signals.RPM,
+                outcome = if (isResponse && !responseExercised) StageOutcome.NOT_EXERCISED else analysis.stage.outcome,
+                stimulusObserved = if (isResponse) responseExercised else null,
                 metrics = buildMap {
                     analysis.narrowband?.let {
                         put("o2_switching_hz", it.frequencyHz)

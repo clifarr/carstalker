@@ -29,7 +29,8 @@ class GuidedTestRunner(
     private val live = LinkedHashMap<Int, Double>()
     private val lastSampleAt = mutableMapOf<Int, Long>()
     private val currentPoints = mutableListOf<CapturePoint>()
-    private val markers = mutableListOf<Long>()
+    private val currentMarkers = mutableListOf<SymptomMarker>()
+    private val markerHistory = mutableListOf<SymptomMarker>()
 
     private var state: GuidedRunState = GuidedRunState.NOT_STARTED
     private var stageIndex = 0
@@ -189,29 +190,47 @@ class GuidedTestRunner(
     fun markSymptom(now: Long) {
         if (state != GuidedRunState.CAPTURING) return
         if (currentStage?.kind != StageKind.PASSIVE_CAPTURE) return
-        markers += now
-        stageMessage = "Symptom marked (${markers.size}). Keep driving; finish the stage when safe."
+        val marker = SymptomMarker(now)
+        currentMarkers += marker
+        markerHistory += marker
+        stageMessage = "Symptom marked (${currentMarkers.size} in this segment). Keep driving; finish the stage when safe."
     }
 
     fun pause() {
         if (state == GuidedRunState.CAPTURING || state == GuidedRunState.SETTLING || state == GuidedRunState.WAITING_FOR_CONDITIONS) {
             userPaused = true
+            invalidateCurrentMarkers("Paused by the user; the partial segment was discarded.")
             state = GuidedRunState.PAUSED
-            stageMessage = "Paused."
+            stageMessage = "Paused. The partial segment was discarded."
         }
     }
 
+    /**
+     * Called when the adapter disconnects mid-test. The active segment is invalidated, but any
+     * symptom markers are kept as explicitly invalidated evidence instead of disappearing.
+     */
+    fun connectionLost(reason: String) {
+        if (state.terminal || state == GuidedRunState.PAUSED) return
+        interruptions++
+        invalidateCurrentMarkers(reason)
+        currentPoints.clear()
+        captureStartedAt = null
+        conditionMetAt = null
+        lastSatisfiedAt = null
+        state = GuidedRunState.PAUSED
+        stageMessage = "Paused: $reason Reconnect and resume, or cancel."
+    }
+
     fun resume(now: Long) {
-        if (!userPaused) return
+        if (!userPaused && state != GuidedRunState.PAUSED) return
         userPaused = false
         conditionMetAt = null
         lastSatisfiedAt = null
         currentPoints.clear()
-        markers.clear()
         captureStartedAt = null
         state = GuidedRunState.WAITING_FOR_CONDITIONS
         stageEnteredAt = now
-        stageMessage = "Restarting this stage."
+        stageMessage = "Restarting this stage. Earlier symptom markers remain recorded as invalidated."
     }
 
     fun cancel() {
@@ -262,7 +281,8 @@ class GuidedTestRunner(
             canSkip = stage != null && (stage.optional || stage.allowFinishEarly),
             canFinishEarly = stage?.allowFinishEarly == true && currentPoints.isNotEmpty(),
             pausedByUser = userPaused,
-            markerCount = markers.size,
+            markerCount = currentMarkers.size,
+            invalidatedMarkerCount = markerHistory.count { it.state == SymptomMarkerState.INVALIDATED },
             message = stageMessage,
         )
     }
@@ -278,21 +298,40 @@ class GuidedTestRunner(
 
     private fun currentStagePids(): Set<Int> = currentStage?.pids?.toSet().orEmpty()
 
+    /**
+     * Marks the markers in the discarded segment as invalidated instead of deleting them. The
+     * result can then say a symptom was marked but its evidence was discarded, never that no
+     * symptom was entered.
+     */
+    private fun invalidateCurrentMarkers(reason: String) {
+        if (currentMarkers.isEmpty()) return
+        val current = currentMarkers.toSet()
+        for (index in markerHistory.indices) {
+            if (markerHistory[index] in current) {
+                markerHistory[index] = markerHistory[index].copy(
+                    state = SymptomMarkerState.INVALIDATED,
+                    reason = reason,
+                )
+            }
+        }
+        currentMarkers.clear()
+    }
+
     private fun beginCapture(stage: StageDefinition, now: Long) {
         state = GuidedRunState.CAPTURING
         captureStartedAt = now
         lastSatisfiedAt = now
         conditionMetAt = null
         currentPoints.clear()
-        markers.clear()
+        currentMarkers.clear()
         stageMessage = "Capturing live data."
     }
 
     private fun pauseForLostCondition(stage: StageDefinition, condition: ConditionFeedback) {
         interruptions++
         state = GuidedRunState.PAUSED
+        invalidateCurrentMarkers("Conditions were lost; the partial segment was discarded.")
         currentPoints.clear()
-        markers.clear()
         captureStartedAt = null
         conditionMetAt = null
         lastSatisfiedAt = null
@@ -335,7 +374,13 @@ class GuidedTestRunner(
             capture = capture,
             interruptions = interruptions,
             completed = completed,
+            outcome = when {
+                capture.points.isEmpty() -> StageOutcome.INSUFFICIENT_QUALITY
+                completed -> StageOutcome.VALID
+                else -> StageOutcome.VALID
+            },
             notes = notes,
+            markerEvents = markerHistory.toList(),
         )
         stageMessage = if (completed) "${stage.title} complete." else "${stage.title} finished."
         state = GuidedRunState.STAGE_COMPLETE
@@ -346,7 +391,8 @@ class GuidedTestRunner(
         stageIndex++
         interruptions = 0
         currentPoints.clear()
-        markers.clear()
+        currentMarkers.clear()
+        markerHistory.clear()
         captureStartedAt = null
         conditionMetAt = null
         lastSatisfiedAt = null
@@ -370,7 +416,7 @@ class GuidedTestRunner(
             requestedPids = requested,
             startedAt = started,
             endedAt = ended.coerceAtLeast(started),
-            markers = markers.toList(),
+            markers = currentMarkers.filter { it.state == SymptomMarkerState.VALID }.map { it.timestampMs },
         )
     }
 

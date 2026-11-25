@@ -35,6 +35,12 @@ data class LogMeta(
     /** 1 = legacy long format, 2 = wide format. */
     val formatVersion: Int = 1,
     val columns: List<LogColumnMeta> = emptyList(),
+    /** "drive" for a normal recording, "guided" for a saved guided capture. */
+    val kind: String = "drive",
+    /** Human-readable source, for example the guide title. */
+    val label: String? = null,
+    /** True when the recording came from the demo transport. */
+    val isDemo: Boolean = false,
 )
 
 data class LogSession(
@@ -74,6 +80,9 @@ class LogRepository(private val context: Context) {
         appVersion: String,
         columns: List<LogColumnMeta>,
         startedAt: Long = System.currentTimeMillis(),
+        kind: String = "drive",
+        label: String? = null,
+        isDemo: Boolean = false,
     ): LogWriter {
         val id = SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US).format(Date(startedAt))
         val meta = LogMeta(
@@ -86,6 +95,9 @@ class LogRepository(private val context: Context) {
             formatVersion = 2,
             columns = columns,
             pids = columns.map { "${it.name} [${it.unit}]" },
+            kind = kind,
+            label = label,
+            isDemo = isDemo,
         )
         val csv = File(directory, "$id.csv")
         val metaFile = File(directory, "$id.json")

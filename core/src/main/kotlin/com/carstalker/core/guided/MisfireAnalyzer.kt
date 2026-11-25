@@ -52,9 +52,14 @@ object MisfireAnalyzer {
         } else {
             observations += GuidedObservation("Misfire codes reported", "None in the last scan")
         }
-        input.scan.mode06Failures.takeIf { it > 0 }?.let {
-            observations += GuidedObservation("Mode 06 failing tests", "$it reported by the ECU")
-            warnings += "Mode 06 failures were present, but cylinder-specific misfire identifiers are not assumed by this test."
+        if (input.scan.mode06CountsAvailable) {
+            input.scan.mode06Failures.takeIf { it > 0 }?.let {
+                observations += GuidedObservation("Mode 06 failing tests", "$it reported by the ECU")
+                warnings += "Mode 06 failures were present, but cylinder-specific misfire identifiers are not assumed by this test."
+            }
+        } else {
+            observations += GuidedObservation("Mode 06 failing tests", "Not checked")
+            warnings += "Mode 06 was not read. That is not the same as zero failures."
         }
 
         fun observe(stage: StageAnalysis?) {

@@ -23,7 +23,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.carstalker.app.data.recommendedDashboardPids
+import com.carstalker.app.data.MAX_DASHBOARD_PIDS
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.transport.demo.DemoScenario
 import com.carstalker.app.ui.components.PidPickerSheet
@@ -39,6 +39,8 @@ import com.carstalker.app.ui.screens.SettingsScreen
 import com.carstalker.core.guided.DiagnosticRegistry
 import com.carstalker.core.guided.PrerequisiteAnswers
 
+private val offlineStartupDisabledRoutes = setOf(Routes.DASHBOARD, Routes.DIAGNOSE, Routes.CODES)
+
 @Composable
 fun CarStalkerShell(
     viewModel: CarStalkerViewModel,
@@ -53,8 +55,8 @@ fun CarStalkerShell(
     val selectedLog by viewModel.selectedLog.collectAsStateWithLifecycle()
     val pdfPreview by viewModel.pdfPreview.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
-    val pinnedPids = remember(settings.dashboardPids, settings.dashboardAuto, supported) {
-        if (settings.dashboardAuto) recommendedDashboardPids(supported) else settings.dashboardPids
+    val pinnedPids = remember(settings.dashboards, settings.activeDashboardId, supported) {
+        settings.resolvedDashboardPids(supported)
     }
 
     val startRoute = initialRoute?.takeIf {
@@ -62,6 +64,9 @@ fun CarStalkerShell(
     } ?: Routes.CONNECT
     val connected = connection is ConnectionState.Ready
     var route by rememberSaveable { mutableStateOf(startRoute) }
+    // Without an adapter the data tabs have nothing to show, so the startup screen keeps only
+    // the offline-safe tabs (recordings and settings) active.
+    val offlineStartup = route == Routes.CONNECT && !connected
 
     LaunchedEffect(autoConnectDemo) {
         if (autoConnectDemo) viewModel.connectDemo()
@@ -118,6 +123,16 @@ fun CarStalkerShell(
         }
     }
 
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                viewModel.pauseGuidedTestForBackground()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     LaunchedEffect(Unit) {
         viewModel.messages.collect { snackbar.showSnackbar(it) }
     }
@@ -133,6 +148,8 @@ fun CarStalkerShell(
     }
     LaunchedEffect(route) {
         if (route != Routes.LOGS) viewModel.closeLog()
+        // Leaving the Diagnose tab must not keep an unattended capture running.
+        if (route != Routes.DIAGNOSE) viewModel.pauseGuidedTestForBackground()
     }
     BackHandler(enabled = pdfPreview == null && route == Routes.CONNECT && connected) {
         route = Routes.DASHBOARD
@@ -144,9 +161,11 @@ fun CarStalkerShell(
             contentWindowInsets = WindowInsets(0, 0, 0, 0),
             snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
-                if (route != Routes.CONNECT || connected) {
-                    StalkerBottomBar(currentRoute = route, onSelect = { route = it })
-                }
+                StalkerBottomBar(
+                    currentRoute = route,
+                    onSelect = { route = it },
+                    disabledRoutes = if (offlineStartup) offlineStartupDisabledRoutes else emptySet(),
+                )
             },
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
@@ -173,8 +192,6 @@ fun CarStalkerShell(
                         else -> ConnectScreen(
                             viewModel = viewModel,
                             onOpenDashboard = { route = Routes.DASHBOARD },
-                            onOpenLogs = { route = Routes.LOGS },
-                            onOpenSettings = { route = Routes.SETTINGS },
                         )
                     }
                 }
@@ -195,7 +212,10 @@ fun CarStalkerShell(
         PidPickerSheet(
             pinned = pinnedPids,
             supported = supported,
-            automatic = settings.dashboardAuto,
+            automatic = settings.activeDashboard.automatic,
+            dashboardName = settings.activeDashboard.name,
+            maxPids = MAX_DASHBOARD_PIDS,
+            customPids = settings.customPids.filter { it.enabled },
             onToggle = viewModel::toggleDashboardPid,
             onUseRecommended = viewModel::useRecommendedDashboard,
             onDismiss = viewModel::closePidPicker,

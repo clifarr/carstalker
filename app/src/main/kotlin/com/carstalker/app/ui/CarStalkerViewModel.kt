@@ -19,7 +19,13 @@ import com.carstalker.app.data.ReportBuilder
 import com.carstalker.app.data.ReportPdfWriter
 import com.carstalker.app.data.ThemeMode
 import com.carstalker.app.data.TransportKind
+import com.carstalker.app.data.VehicleProfileEntry
+import com.carstalker.app.data.blankDashboard
+import com.carstalker.app.data.MAX_DASHBOARD_PIDS
+import com.carstalker.app.data.movedDashboardPids
 import com.carstalker.app.data.recommendedDashboardPids
+import com.carstalker.app.data.replacedDashboardPids
+import com.carstalker.app.data.toggledDashboardPids
 import com.carstalker.app.di.AppGraph
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.transport.ble.BleTransport
@@ -89,6 +95,13 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
     private val _history = MutableStateFlow<Map<Int, List<Float>>>(emptyMap())
     val history: StateFlow<Map<Int, List<Float>>> = _history.asStateFlow()
 
+    /**
+     * Wall-clock time of the newest accepted sample per parameter. The dashboard uses it to
+     * distinguish a static value the car keeps reporting from a value that stopped updating.
+     */
+    private val _lastSampleAt = MutableStateFlow<Map<Int, Long>>(emptyMap())
+    val lastSampleAt: StateFlow<Map<Int, Long>> = _lastSampleAt.asStateFlow()
+
     private val _logs = MutableStateFlow<List<LogSession>>(emptyList())
     val logs: StateFlow<List<LogSession>> = _logs.asStateFlow()
 
@@ -156,6 +169,12 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
             graph.session.samples.collect { snapshot ->
                 val points = snapshot.values
                 if (points.isEmpty()) return@collect
+                val sampledAt = System.currentTimeMillis()
+                _lastSampleAt.update { old ->
+                    val updated = old.toMutableMap()
+                    for (pid in points.keys) updated[pid] = sampledAt
+                    updated
+                }
                 _history.update { old ->
                     val updated = old.toMutableMap()
                     for ((pid, value) in points) {
@@ -164,6 +183,14 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
                     }
                     updated
                 }
+            }
+        }
+        viewModelScope.launch {
+            graph.session.identity.collect { identity ->
+                val key = identity.vin?.takeIf { it.isNotBlank() }
+                    ?: identity.calibrationId?.takeIf { it.isNotBlank() }
+                    ?: "unknown"
+                applyVehicleProfile(key)
             }
         }
         viewModelScope.launch {
@@ -184,6 +211,7 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
                     resetGuidedTest()
                     _activeGuide.value = null
                     _benchmark.value = null
+                    _lastSampleAt.value = emptyMap()
                 }
             }
         }
@@ -471,6 +499,13 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         graph.session.pauseGuidedTest()
     }
 
+    /** Called when the app leaves the foreground: never keep recording an unattended stage. */
+    fun pauseGuidedTestForBackground() {
+        if (_guidedResult.value == null && _guidedSnapshot.value?.isActive == true) {
+            graph.session.pauseGuidedTest()
+        }
+    }
+
     fun resumeGuidedTest() {
         graph.session.resumeGuidedTest()
     }
@@ -526,6 +561,8 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
                     report = dtcReport.value,
                     wizardResult = _wizardResult.value,
                     guidedResults = _guidedResult.value?.let { listOf(it) }.orEmpty(),
+                    maskVin = !settings.value.includeVinInReports,
+                    isDemo = ready?.transportName?.contains("Demo") == true,
                 )
                 val file = withContext(Dispatchers.IO) {
                     val directory = File(context.filesDir, "reports").apply { mkdirs() }
@@ -622,28 +659,215 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun setShopName(name: String) = updateSettings { it.copy(shopName = name.take(80)) }
 
-    fun setFuelType(fuelType: FuelType) = updateSettings { it.copy(fuelType = fuelType) }
+    fun setFuelType(fuelType: FuelType) = updateSettings { current ->
+        val key = current.profileVehicleKey
+        current.copy(
+            fuelType = fuelType,
+            vehicleProfiles = if (key.isBlank()) {
+                current.vehicleProfiles
+            } else {
+                current.vehicleProfiles + (key to VehicleProfileEntry(fuelType, current.aspiration))
+            },
+        )
+    }
 
-    fun setAspiration(aspiration: Aspiration) = updateSettings { it.copy(aspiration = aspiration) }
+    fun setAspiration(aspiration: Aspiration) = updateSettings { current ->
+        val key = current.profileVehicleKey
+        current.copy(
+            aspiration = aspiration,
+            vehicleProfiles = if (key.isBlank()) {
+                current.vehicleProfiles
+            } else {
+                current.vehicleProfiles + (key to VehicleProfileEntry(current.fuelType, aspiration))
+            },
+        )
+    }
+
+    /**
+     * Tells the polling loop which parameter's detail view is open. While it is set, that
+     * parameter is requested on every cycle instead of waiting for its scheduled turn.
+     */
+    fun setDetailPid(pidId: Int?) {
+        graph.session.setFocusPid(pidId)
+    }
 
     fun toggleDashboardPid(pidId: Int) {
         val supported = supportedPids.value
-        updateSettings { current ->
+        val active = settings.value.activeDashboard
+        val base = if (active.automatic) recommendedDashboardPids(supported) else active.pids
+        if (toggledDashboardPids(base, pidId) == null) {
+            viewModelScope.launch {
+                _messages.emit("A dashboard can show up to $MAX_DASHBOARD_PIDS values. Remove one first.")
+            }
+            return
+        }
+        updateSettings { latest ->
+            val dashboard = latest.activeDashboard
             // The first manual toggle freezes the automatic selection, then edits that list.
-            val base = if (current.dashboardAuto) {
+            val current = if (dashboard.automatic) {
                 recommendedDashboardPids(supported)
             } else {
-                current.dashboardPids
+                dashboard.pids
             }
-            val pids = base.toMutableList()
-            if (pids.contains(pidId)) pids.remove(pidId) else pids.add(pidId)
-            current.copy(dashboardPids = pids, dashboardAuto = false)
+            val pids = toggledDashboardPids(current, pidId) ?: return@updateSettings latest
+            latest.copy(
+                dashboards = latest.dashboards.map {
+                    if (it.id == dashboard.id) it.copy(pids = pids, automatic = false) else it
+                },
+            )
         }
     }
 
-    /** Restore the automatic "top 10 for this car" dashboard selection. */
+    /**
+     * Moves a dashboard value to the target value's position. Dropping onto a card places the
+     * dragged value just before it, which is how a two-column grid reads.
+     */
+    fun moveDashboardPid(fromId: Int, toId: Int) {
+        if (fromId == toId) return
+        val supported = supportedPids.value
+        updateSettings { current ->
+            val active = current.activeDashboard
+            val base = if (active.automatic) recommendedDashboardPids(supported) else active.pids
+            val reordered = movedDashboardPids(base, fromId, toId) ?: return@updateSettings current
+            current.copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == active.id) it.copy(pids = reordered, automatic = false) else it
+                },
+            )
+        }
+    }
+
+    /** Swaps one dashboard value for another, keeping its position and the dashboard size. */
+    fun replaceDashboardPid(oldId: Int, newId: Int) {
+        if (oldId == newId) return
+        val supported = supportedPids.value
+        updateSettings { current ->
+            val active = current.activeDashboard
+            val base = if (active.automatic) recommendedDashboardPids(supported) else active.pids
+            val replaced = replacedDashboardPids(base, oldId, newId) ?: return@updateSettings current
+            current.copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == active.id) it.copy(pids = replaced, automatic = false) else it
+                },
+            )
+        }
+    }
+
+    /** Restore the automatic selection for this car on the active dashboard. */
     fun useRecommendedDashboard() {
-        updateSettings { it.copy(dashboardAuto = true) }
+        updateSettings { current ->
+            current.copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == current.activeDashboardId) it.copy(automatic = true) else it
+                },
+            )
+        }
+    }
+
+    // ---- Dashboards -------------------------------------------------------
+
+    fun selectDashboard(id: String) {
+        updateSettings { current ->
+            if (current.dashboards.any { it.id == id }) current.copy(activeDashboardId = id) else current
+        }
+    }
+
+    fun createBlankDashboard() {
+        updateSettings { current ->
+            val number = current.dashboards.size + 1
+            val dashboard = blankDashboard(
+                id = "dashboard-${java.util.UUID.randomUUID()}",
+                name = "Dashboard $number",
+            )
+            current.copy(dashboards = current.dashboards + dashboard, activeDashboardId = dashboard.id)
+        }
+    }
+
+    fun duplicateDashboard(id: String) {
+        updateSettings { current ->
+            val source = current.dashboards.firstOrNull { it.id == id } ?: return@updateSettings current
+            val copy = source.copy(
+                id = "dashboard-${java.util.UUID.randomUUID()}",
+                name = "${source.name} copy",
+            )
+            current.copy(dashboards = current.dashboards + copy, activeDashboardId = copy.id)
+        }
+    }
+
+    fun renameDashboard(id: String, name: String) {
+        val trimmed = name.trim().take(32)
+        if (trimmed.isEmpty()) return
+        updateSettings { current ->
+            current.copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == id) it.copy(name = trimmed) else it
+                },
+            )
+        }
+    }
+
+    fun deleteDashboard(id: String) {
+        updateSettings { current ->
+            if (current.dashboards.size <= 1) return@updateSettings current
+            val remaining = current.dashboards.filterNot { it.id == id }
+            current.copy(
+                dashboards = remaining,
+                activeDashboardId = if (current.activeDashboardId == id) remaining.first().id else current.activeDashboardId,
+            )
+        }
+    }
+
+    fun setDashboardGauges(id: String, enabled: Boolean) {
+        updateSettings { current ->
+            current.copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == id) it.copy(showGauges = enabled) else it
+                },
+            )
+        }
+    }
+
+    fun setDashboardAutomatic(id: String, enabled: Boolean) {
+        updateSettings { current ->
+            current.copy(
+                dashboards = current.dashboards.map {
+                    if (it.id == id) it.copy(automatic = enabled) else it
+                },
+            )
+        }
+    }
+
+    fun setIncludeVinInReports(include: Boolean) {
+        updateSettings { it.copy(includeVinInReports = include) }
+    }
+
+    /**
+     * Applies the stored profile for [vehicleKey] when the connected vehicle changes. A profile
+     * from another car is never silently reused.
+     */
+    fun applyVehicleProfile(vehicleKey: String) {
+        if (vehicleKey.isBlank()) return
+        updateSettings { current ->
+            if (current.profileVehicleKey == vehicleKey) return@updateSettings current
+            val stored = current.vehicleProfiles[vehicleKey]
+            // A profile entered before the first connection belongs to the first car seen.
+            val fallback = if (stored == null && current.profileVehicleKey == "unknown") {
+                VehicleProfileEntry(current.fuelType, current.aspiration)
+            } else {
+                null
+            }
+            val effective = stored ?: fallback
+            current.copy(
+                profileVehicleKey = vehicleKey,
+                fuelType = effective?.fuelType ?: FuelType.UNKNOWN,
+                aspiration = effective?.aspiration ?: Aspiration.UNKNOWN,
+                vehicleProfiles = if (fallback != null) {
+                    current.vehicleProfiles + (vehicleKey to fallback)
+                } else {
+                    current.vehicleProfiles
+                },
+            )
+        }
     }
 
     fun openPidPicker() { _showPidPicker.value = true }
@@ -701,6 +925,60 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         }
     }
 
+    fun openExternal(url: String) {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure {
+            viewModelScope.launch { _messages.emit("No app can open that link.") }
+        }
+    }
+
+    /**
+     * Local, opt-in connection diagnostics for a beta bug report. It contains no VIN, location or
+     * account data and never leaves the device until the user chooses a share target.
+     */
+    fun exportConnectionDiagnostics() {
+        viewModelScope.launch {
+            runCatching {
+                val ready = connection.value as? ConnectionState.Ready
+                val text = buildString {
+                    appendLine("CarStalker connection diagnostics")
+                    appendLine("App: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
+                    appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
+                    appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+                    appendLine("Connection: ${connection.value::class.simpleName}")
+                    appendLine("Transport: ${ready?.transportName ?: "not connected"}")
+                    appendLine("Adapter: ${ready?.adapter?.identifier ?: "not connected"}")
+                    appendLine("Protocol: ${ready?.adapter?.protocolName ?: "unknown"}")
+                    appendLine("Supported PIDs: ${supportedPids.value.size}")
+                    appendLine("Vehicle identity: not included")
+                    appendLine("Generated: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}")
+                }
+                val file = withContext(Dispatchers.IO) {
+                    val directory = File(context.filesDir, "diagnostics").apply { mkdirs() }
+                    File(directory, "carstalker-diagnostics-${System.currentTimeMillis()}.txt").also {
+                        it.writeText(text)
+                    }
+                }
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, "CarStalker connection diagnostics")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(intent, "Share diagnostics").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }.onFailure {
+                _messages.emit("Could not create diagnostics: ${it.message ?: "unknown error"}")
+            }
+        }
+    }
+
     fun shareLog(session: LogSession) {
         val file = graph.logs.fileFor(session)
         if (!file.exists()) {
@@ -726,7 +1004,7 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     companion object {
-        private const val HISTORY_LENGTH = 90
+        private const val HISTORY_LENGTH = 600
 
         fun factory(graph: AppGraph) = viewModelFactory {
             initializer { CarStalkerViewModel(graph) }

@@ -13,6 +13,10 @@ enum class DemoScenario(val label: String) {
     DRIVE("Driving cycle"),
     IDLE("Warm idle"),
     STEADY_2500("Steady 2,500 rpm"),
+    STEADY_2000("Steady 2,000 rpm"),
+    THROTTLE_BLIP("Throttle blip"),
+    RICH_IDLE("Rich idle (−18 % trims)"),
+    VOLTAGE_SPIKE("Voltage spikes"),
     ENGINE_OFF("Ignition on, engine off"),
     ELECTRICAL_LOAD("Idle with electrical load"),
     COLD_START("Cold start warm-up"),
@@ -151,7 +155,7 @@ class DemoTransport : Transport, DemoControllable {
             0x05 -> "42 05 00 7B\r\r>"
             0x06 -> "42 06 00 80\r\r>"
             0x07 -> "42 07 00 84\r\r>"
-            0x0B -> "42 0B 00 65\r\r>"
+            0x0B -> "42 0B 00 28\r\r>"
             0x0C -> "42 0C 00 1A F8\r\r>"
             0x0D -> "42 0D 00 32\r\r>"
             0x0E -> "42 0E 00 94\r\r>"
@@ -177,9 +181,12 @@ class DemoTransport : Transport, DemoControllable {
         "06A0" -> "46 A0 80 00 00 01\r\r>" // MID A1 + next bitmap
         "06C0" -> "46 C0 00 00 00 01\r\r>" // MID E0
         "06E0" -> "46 E0 00 00 00 00\r\r>"
-        "0601" -> "46 01 01 0A 0B B0 0B B0 0B B0 01 05 10 00 48 00 00 00 64 01 0C 24 00 00 00 00 00 05\r\r>"
-        "0621" -> "46 21 01 24 00 0A 00 00 00 05\r\r>"
-        "06A1" -> "46 A1 0C 24 00 0A 00 00 00 05 A1 0B 24 00 02 00 00 00 64\r\r>"
+        // O2 B1S1: threshold voltage (UAS 0x0C = 0.01 V), switch time (UAS 0x10 = 1 ms), misfire count (UAS 0x01).
+        "0601" -> "46 01 01 0C 00 41 00 1E 00 64 01 05 10 00 48 00 00 00 64 01 0C 01 00 00 00 00 00 05\r\r>"
+        // Catalyst B1: threshold voltage below the ECU's minimum, a genuine trusted FAIL.
+        "0621" -> "46 21 01 0C 00 0A 00 1E 00 64\r\r>"
+        // Misfire general: current and EWMA counts, both within limits.
+        "06A1" -> "46 A1 0C 01 00 02 00 00 00 64 A1 0B 01 00 02 00 00 00 64\r\r>"
         else -> "NO DATA\r\r>"
     }
 
@@ -189,10 +196,19 @@ class DemoTransport : Transport, DemoControllable {
         val scenarioTime = (System.nanoTime() - scenarioStartNanos) / 1_000_000_000.0
         val cycle = (t % 60.0) / 60.0
         val driveRpm = 900 + 2400 * (0.5 + 0.5 * sin(cycle * 2 * Math.PI))
+        val blipPhase = (scenarioTime % 12.0)
+        val blip = when {
+            blipPhase < 5.0 -> 0.0
+            blipPhase < 7.0 -> (blipPhase - 5.0) / 2.0
+            blipPhase < 9.0 -> 1.0
+            else -> ((12.0 - blipPhase) / 3.0).coerceIn(0.0, 1.0)
+        }
         val rpm = when (scenario) {
             DemoScenario.DRIVE -> driveRpm
-            DemoScenario.IDLE, DemoScenario.ELECTRICAL_LOAD -> 800.0
+            DemoScenario.IDLE, DemoScenario.ELECTRICAL_LOAD, DemoScenario.RICH_IDLE, DemoScenario.VOLTAGE_SPIKE -> 800.0
             DemoScenario.STEADY_2500 -> 2_500.0
+            DemoScenario.STEADY_2000 -> 2_000.0
+            DemoScenario.THROTTLE_BLIP -> 800.0 + 1_700.0 * blip
             DemoScenario.ENGINE_OFF -> 0.0
             DemoScenario.COLD_START -> 900.0
             DemoScenario.CRANKING -> 220.0
@@ -205,6 +221,8 @@ class DemoTransport : Transport, DemoControllable {
             DemoScenario.DRIVE -> 10 + 28 * (0.5 + 0.5 * sin(cycle * 2 * Math.PI))
             DemoScenario.ENGINE_OFF, DemoScenario.CRANKING -> 0.0
             DemoScenario.STEADY_2500 -> 12.0
+            DemoScenario.STEADY_2000 -> 10.0
+            DemoScenario.THROTTLE_BLIP -> 2.0 + 28.0 * blip
             else -> 2.0
         }
         val coolant = when (scenario) {
@@ -223,6 +241,8 @@ class DemoTransport : Transport, DemoControllable {
             DemoScenario.DRIVE -> (25 + 40 * (throttle / 38.0)).roundToInt().coerceIn(0, 100)
             DemoScenario.ENGINE_OFF, DemoScenario.CRANKING -> 0
             DemoScenario.STEADY_2500 -> 26
+            DemoScenario.STEADY_2000 -> 22
+            DemoScenario.THROTTLE_BLIP -> (16 + 60 * blip).roundToInt()
             else -> 16
         }
         val maf = when (scenario) {
@@ -236,6 +256,8 @@ class DemoTransport : Transport, DemoControllable {
             DemoScenario.ENGINE_OFF -> 101.0
             DemoScenario.CRANKING -> 100.0
             DemoScenario.STEADY_2500 -> 30.0
+            DemoScenario.STEADY_2000 -> 30.0
+            DemoScenario.THROTTLE_BLIP -> 32.0 + 48.0 * blip
             DemoScenario.COLD_START -> 34.0
             else -> 32.0
         }
@@ -243,7 +265,10 @@ class DemoTransport : Transport, DemoControllable {
             DemoScenario.DRIVE -> if (rpm < 1_500) 24.0 else 6.0
             DemoScenario.COLD_START -> 15.0
             DemoScenario.STEADY_2500 -> 6.0
-            DemoScenario.IDLE, DemoScenario.ELECTRICAL_LOAD -> 24.0
+            DemoScenario.STEADY_2000 -> 6.0
+            DemoScenario.THROTTLE_BLIP -> if (blip > 0.3) 6.0 else 24.0
+            DemoScenario.RICH_IDLE -> -18.0
+            DemoScenario.IDLE, DemoScenario.ELECTRICAL_LOAD, DemoScenario.VOLTAGE_SPIKE -> 24.0
             DemoScenario.ENGINE_OFF, DemoScenario.CRANKING -> 0.0
         }
         val fuelSystem = when {
@@ -261,7 +286,7 @@ class DemoTransport : Transport, DemoControllable {
             0x20 -> "41 20 E0 1F E0 01\r\r>"
             0x40 -> "41 40 7E C0 28 01\r\r>"
             0x60 -> "41 60 E0 00 00 00\r\r>"
-            0x01 -> if (codesCleared) "41 01 00 07 00 00\r\r>" else "41 01 82 07 E5 04\r\r>"
+            0x01 -> if (codesCleared) "41 01 00 0F 00 00\r\r>" else "41 01 82 0F EF 00\r\r>"
             0x03 -> reply(fuelSystem)
             0x04 -> reply((load * 255 / 100).coerceIn(0, 255))
             0x05 -> reply((coolant + 40).roundToInt().coerceIn(0, 255))
@@ -339,6 +364,19 @@ class DemoTransport : Transport, DemoControllable {
         DemoScenario.DRIVE -> 13.8
         DemoScenario.IDLE -> 14.1
         DemoScenario.STEADY_2500 -> 14.2
+        DemoScenario.STEADY_2000 -> 14.2
+        DemoScenario.THROTTLE_BLIP -> 14.1
+        DemoScenario.RICH_IDLE -> 14.0
+        DemoScenario.VOLTAGE_SPIKE -> {
+            val phase = ((System.nanoTime() - scenarioStartNanos) / 1_000_000_000.0) % 12.0
+            when {
+                phase < 0.6 -> 15.9
+                phase < 1.0 -> 13.2
+                phase < 6.0 -> 14.1
+                phase < 6.4 -> 12.4
+                else -> 14.1
+            }
+        }
         DemoScenario.ENGINE_OFF -> 12.4
         DemoScenario.ELECTRICAL_LOAD -> 13.6
         DemoScenario.COLD_START -> 14.0

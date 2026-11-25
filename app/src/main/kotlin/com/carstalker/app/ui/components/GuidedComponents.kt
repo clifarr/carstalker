@@ -7,12 +7,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.carstalker.app.ui.theme.LocalStalkerColors
@@ -51,8 +57,20 @@ fun TraceChart(
 ) {
     val stalker = LocalStalkerColors.current
     val all = series.flatMap { it.points }
+    val summary = if (all.isEmpty()) {
+        "Chart with no data yet"
+    } else {
+        val minY = all.minOf { it.y }
+        val maxY = all.maxOf { it.y }
+        val names = series.joinToString { it.label }
+        "Chart of $names. Minimum ${formatChart(minY, decimals)}${if (unit.isBlank()) "" else " $unit"}, " +
+            "maximum ${formatChart(maxY, decimals)}${if (unit.isBlank()) "" else " $unit"}. " +
+            "Time window ${durationLabel ?: "current capture"}. " +
+            if (series.size > 1) "Multiple series share one vertical scale." else "One series."
+    }
     Box(
         modifier
+            .semantics { contentDescription = summary }
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
             .padding(10.dp),
     ) {
@@ -161,6 +179,7 @@ fun MetricChip(label: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DemoControls(
     selected: com.carstalker.app.transport.demo.DemoScenario?,
@@ -176,21 +195,18 @@ fun DemoControls(
             color = stalker.muted,
         )
         Spacer(Modifier.height(6.dp))
-        Row(
+        FlowRow(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            com.carstalker.app.transport.demo.DemoScenario.entries.take(4).forEach { scenario ->
-                DemoChip(scenario, selected == scenario, onSelect, Modifier.weight(1f))
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            com.carstalker.app.transport.demo.DemoScenario.entries.drop(4).forEach { scenario ->
-                DemoChip(scenario, selected == scenario, onSelect, Modifier.weight(1f))
+            com.carstalker.app.transport.demo.DemoScenario.entries.forEach { scenario ->
+                DemoChip(
+                    scenario = scenario,
+                    active = selected == scenario,
+                    onSelect = onSelect,
+                    modifier = Modifier.widthIn(min = 132.dp),
+                )
             }
         }
     }
@@ -205,18 +221,34 @@ private fun DemoChip(
 ) {
     val stalker = LocalStalkerColors.current
     Surface(
-        onClick = { onSelect(scenario) },
-        modifier = modifier,
+        modifier = modifier.selectable(
+            selected = active,
+            role = androidx.compose.ui.semantics.Role.RadioButton,
+            onClick = { onSelect(scenario) },
+        ),
         shape = RoundedCornerShape(10.dp),
         color = if (active) stalker.accent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant,
     ) {
-        Text(
-            scenario.label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (active) stalker.accent else stalker.muted,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
-        )
+        Row(
+            Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            if (active) {
+                Text(
+                    "✓",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = stalker.accent,
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                scenario.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (active) stalker.accent else stalker.muted,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 

@@ -56,7 +56,10 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.carstalker.app.data.AdapterVoltageParam
+import com.carstalker.app.data.DEFAULT_DASHBOARD_SIZE
 import com.carstalker.app.data.DashboardParams
+import com.carstalker.app.data.toPid
 import com.carstalker.app.ui.theme.LocalStalkerColors
 import com.carstalker.core.obd.Pid
 import java.util.Locale
@@ -73,6 +76,9 @@ fun PidPickerSheet(
     pinned: List<Int>,
     supported: Set<Int>,
     automatic: Boolean,
+    dashboardName: String,
+    maxPids: Int,
+    customPids: List<com.carstalker.app.data.CustomPid>,
     onToggle: (Int) -> Unit,
     onUseRecommended: () -> Unit,
     onDismiss: () -> Unit,
@@ -80,6 +86,7 @@ fun PidPickerSheet(
     val stalker = LocalStalkerColors.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+    val atLimit = pinned.size >= maxPids
     val groups = remember {
         val byCategory = DashboardParams.groupBy { it.category }
         CategoryOrder.mapNotNull { category -> byCategory[category]?.let { category to it } }
@@ -169,24 +176,35 @@ fun PidPickerSheet(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "Dashboard parameters",
+                                "DASHBOARD PARAMETERS",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = stalker.accent,
+                            )
+                            Text(
+                                dashboardName,
                                 style = MaterialTheme.typography.headlineSmall,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                             Spacer(Modifier.height(3.dp))
                             Text(
-                                "Pick the live values you want to see.",
+                                "Pick the live values this dashboard shows.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = stalker.muted,
                             )
                             if (automatic) {
                                 Spacer(Modifier.height(3.dp))
                                 Text(
-                                    "Automatic: up to 10 values, chosen for this car.",
+                                    "Automatic: up to $DEFAULT_DASHBOARD_SIZE values, chosen for this car.",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = stalker.accent,
                                 )
                             } else {
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    "${pinned.size} of $maxPids values selected.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (atLimit) stalker.warning else stalker.muted,
+                                )
                                 TextButton(
                                     onClick = onUseRecommended,
                                     contentPadding = PaddingValues(0.dp),
@@ -197,6 +215,14 @@ fun PidPickerSheet(
                                         color = stalker.accent,
                                     )
                                 }
+                            }
+                            if (atLimit) {
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    "Maximum $maxPids values. Remove one before adding another.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stalker.warning,
+                                )
                             }
                         }
                         IconButton(onClick = onDismiss) {
@@ -216,6 +242,42 @@ fun PidPickerSheet(
                             .padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
+                        if (customPids.isNotEmpty()) {
+                            stickyHeader(key = "category-custom") {
+                                CustomHeader(
+                                    selected = customPids.count { it.enabled && it.id in pinned },
+                                    total = customPids.size,
+                                )
+                            }
+                            items(customPids, key = { "custom-${it.pidHex}" }) { custom ->
+                                val pid = custom.toPid()
+                                if (pid == null) {
+                                    PidPickRow(
+                                        pid = AdapterVoltageParam.copy(
+                                            id = -2,
+                                            name = custom.name,
+                                            shortName = custom.shortName,
+                                            unit = custom.unit,
+                                        ),
+                                        checked = false,
+                                        supported = false,
+                                        badge = "INVALID",
+                                        enabled = false,
+                                        onToggle = {},
+                                    )
+                                } else {
+                                    PidPickRow(
+                                        pid = pid,
+                                        checked = pid.id in pinned,
+                                        // Custom PIDs have no support bitmap; they are always selectable.
+                                        supported = true,
+                                        badge = "CUSTOM",
+                                        enabled = !atLimit || pid.id in pinned,
+                                        onToggle = { onToggle(pid.id) },
+                                    )
+                                }
+                            }
+                        }
                         groups.forEach { (category, pids) ->
                             stickyHeader(key = "category-${category.name}") {
                                 CategoryHeader(
@@ -230,6 +292,8 @@ fun PidPickerSheet(
                                     checked = pid.id in pinned,
                                     // Adapter measurements have no PID to check against.
                                     supported = pid.id < 0 || supported.isEmpty() || pid.id in supported,
+                                    badge = null,
+                                    enabled = !atLimit || pid.id in pinned,
                                     onToggle = { onToggle(pid.id) },
                                 )
                             }
@@ -274,6 +338,8 @@ private fun PidPickRow(
     pid: Pid,
     checked: Boolean,
     supported: Boolean,
+    badge: String?,
+    enabled: Boolean = true,
     onToggle: () -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
@@ -281,6 +347,7 @@ private fun PidPickRow(
         Modifier
             .fillMaxWidth()
             .clickable(
+                enabled = enabled,
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onToggle,
@@ -294,6 +361,7 @@ private fun PidPickRow(
     ) {
         Checkbox(
             checked = checked,
+            enabled = enabled,
             onCheckedChange = { onToggle() },
             colors = CheckboxDefaults.colors(
                 checkedColor = stalker.accent,
@@ -323,6 +391,17 @@ private fun PidPickRow(
                 }
             }
         }
+        badge?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.accentSecondary,
+                modifier = Modifier
+                    .background(stalker.accentSecondary.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         if (!supported) {
             Text(
                 "N/A",
@@ -334,6 +413,30 @@ private fun PidPickRow(
             )
             Spacer(Modifier.width(6.dp))
         }
+    }
+}
+
+@Composable
+private fun CustomHeader(selected: Int, total: Int) {
+    val stalker = LocalStalkerColors.current
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(start = 8.dp, end = 8.dp, top = 14.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "CUSTOM PIDS",
+            style = MaterialTheme.typography.labelSmall,
+            color = stalker.accentSecondary,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            text = "$selected of $total",
+            style = MaterialTheme.typography.labelSmall,
+            color = stalker.muted,
+        )
     }
 }
 

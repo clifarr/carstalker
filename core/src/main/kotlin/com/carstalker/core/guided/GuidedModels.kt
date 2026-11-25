@@ -2,6 +2,7 @@ package com.carstalker.core.guided
 
 import com.carstalker.core.diagnose.CaptureData
 import com.carstalker.core.diagnose.CapturePoint
+import com.carstalker.core.obd.MonitorDataState
 import com.carstalker.core.obd.MonitorStatus
 import java.util.Locale
 
@@ -150,6 +151,19 @@ enum class DiagnosticPhase(val label: String) {
     PHASE_4("Phase 4"),
 }
 
+/**
+ * User-facing grouping. [DiagnosticPhase] stays as implementation history; the catalogue is
+ * organised by the problem the driver is trying to solve.
+ */
+enum class DiagnosticCategory(val label: String) {
+    ENGINE_FUEL("Engine and fuel"),
+    EMISSIONS("Emissions"),
+    ELECTRICAL_STARTING("Electrical and starting"),
+    AIRFLOW_SENSORS("Airflow, boost and sensors"),
+    VEHICLE_HEALTH("Vehicle health"),
+    DRIVING_SYMPTOMS("Driving symptoms"),
+}
+
 enum class EngineRequirement(val label: String) {
     ANY("Any engine"),
     PETROL("Petrol engines"),
@@ -240,7 +254,12 @@ data class DiagnosticDefinition(
     val subtitle: String,
     val description: String,
     val phase: DiagnosticPhase,
+    val category: DiagnosticCategory = DiagnosticCategory.ENGINE_FUEL,
     val estimatedMinutes: Int,
+    /** Extra search terms such as "won't start", "charging", "smoke test". */
+    val keywords: List<String> = emptyList(),
+    /** Describes preparation that the estimated capture time does not include. */
+    val durationNote: String? = null,
     val dtcs: List<String> = emptyList(),
     /** Exact codes or prefixes used to suggest this guide for a scan result. */
     val dtcMatch: List<String> = emptyList(),
@@ -327,6 +346,7 @@ data class GuidedSnapshot(
     val canFinishEarly: Boolean = false,
     val pausedByUser: Boolean = false,
     val markerCount: Int = 0,
+    val invalidatedMarkerCount: Int = 0,
     val message: String = "",
 ) {
     val stageNumber: Int get() = (stageIndex + 1).coerceAtMost(stageCount.coerceAtLeast(1))
@@ -337,6 +357,24 @@ data class GuidedSnapshot(
             state == GuidedRunState.PAUSED
 }
 
+/** How much a stage actually exercised its intended condition. */
+enum class StageOutcome(val label: String) {
+    VALID("Valid"),
+    NOT_EXERCISED("Not exercised"),
+    INSUFFICIENT_QUALITY("Insufficient quality"),
+    SKIPPED("Skipped"),
+    INTERRUPTED("Interrupted"),
+}
+
+enum class SymptomMarkerState { VALID, INVALIDATED }
+
+/** A timestamped, first-class symptom annotation. It survives a stage restart. */
+data class SymptomMarker(
+    val timestampMs: Long,
+    val state: SymptomMarkerState = SymptomMarkerState.VALID,
+    val reason: String? = null,
+)
+
 /** One completed (or interrupted) stage capture. */
 data class StageCapture(
     val stageId: String,
@@ -345,13 +383,21 @@ data class StageCapture(
     val capture: CaptureData,
     val interruptions: Int = 0,
     val completed: Boolean = true,
+    val outcome: StageOutcome = if (completed) StageOutcome.VALID else StageOutcome.INTERRUPTED,
     val notes: List<String> = emptyList(),
+    val markerEvents: List<SymptomMarker> = emptyList(),
 ) {
     fun series(pid: Int): List<CapturePoint> = capture.series(pid)
     fun sampleCount(pid: Int): Int = capture.sampleCount(pid)
     fun averageHz(pid: Int): Double = capture.averageHz(pid)
     val durationMs: Long get() = capture.durationMs
-    val markers: List<Long> get() = capture.markers
+
+    /** Kept for compatibility: the timestamps of valid markers. */
+    val markers: List<Long>
+        get() = (markerEvents.filter { it.state == SymptomMarkerState.VALID }.map { it.timestampMs } + capture.markers).distinct()
+
+    val invalidatedMarkers: List<SymptomMarker>
+        get() = markerEvents.filter { it.state == SymptomMarkerState.INVALIDATED }
 }
 
 enum class DiagnosticStatus(val label: String) {
@@ -403,6 +449,8 @@ data class StageSummary(
     val durationSeconds: Double,
     val effectiveHz: Double,
     val gaps: Int,
+    val outcome: StageOutcome = if (valid) StageOutcome.VALID else StageOutcome.INSUFFICIENT_QUALITY,
+    val stimulusObserved: Boolean? = null,
     val metrics: Map<String, Double> = emptyMap(),
     val notes: List<String> = emptyList(),
 )
@@ -413,6 +461,10 @@ data class CaptureQualitySummary(
     val missingSignals: List<String> = emptyList(),
     val notes: List<String> = emptyList(),
     val interruptions: Int = 0,
+    /** Null when the guide does not require a stimulus. */
+    val stimulusObserved: Boolean? = null,
+    /** Short, plain-English description of the evidence quality. */
+    val evidenceQuality: String = "",
 )
 
 data class GuidedResult(
@@ -432,8 +484,27 @@ data class GuidedResult(
     val generatedAt: Long = 0L,
     val profile: VehicleProfile = VehicleProfile(),
     val stagesSkipped: List<String> = emptyList(),
+    val vehicleKey: String = "",
+    val adapterName: String? = null,
+    val protocolName: String? = null,
+    val isDemo: Boolean = false,
+    val scanReadAt: Long = 0L,
+    val dataAgeMs: Long = 0L,
 ) {
     val primaryFinding: GuidedFinding? get() = findings.firstOrNull()
+
+    /** The single most useful next action, or a fallback when the result is clean. */
+    val nextCheck: String
+        get() = primaryFinding?.nextCheck
+            ?: nextSteps.firstOrNull()
+            ?: "No further check is needed for this test. Re-run it if the symptom returns."
+
+    /** Plain-English scope, so a clean result cannot read as a whole-car verdict. */
+    val scope: String
+        get() {
+            val clean = title.trimEnd('.', '?', '!')
+            return "Scope: $clean. A single OBD capture cannot prove a component is healthy or failed."
+        }
 }
 
 /** Snapshot of the last DTC/monitor scan, used by the passive readiness and inspection guides. */
@@ -445,9 +516,16 @@ data class ScanContext(
     val freezeFrameCount: Int = 0,
     val mode06Tests: Int = 0,
     val mode06Failures: Int = 0,
+    val mode06State: MonitorDataState = MonitorDataState.NOT_REQUESTED,
+    val mode06ReadAt: Long = 0L,
+    val readAt: Long = 0L,
 ) {
     val allCodes: List<String> get() = (storedCodes + pendingCodes + permanentCodes).distinct()
     val hasScan: Boolean get() = monitor != null || allCodes.isNotEmpty()
+
+    /** Counts are only meaningful when the monitor data was actually read. */
+    val mode06CountsAvailable: Boolean
+        get() = mode06State == MonitorDataState.AVAILABLE
 }
 
 /** A stored same-vehicle, same-condition reference capture for the health-baseline guide. */
@@ -471,9 +549,14 @@ data class AnalysisInput(
     val adapterVoltageUsed: Boolean = false,
     val safetyStopReason: String? = null,
     val cancelled: Boolean = false,
+    /** The adapter stopped answering during the test; the captured stages are still usable. */
+    val connectionLost: Boolean = false,
     val scan: ScanContext = ScanContext(),
     val baseline: BaselineSnapshot? = null,
     val vehicleKey: String = "",
+    val adapterName: String? = null,
+    val protocolName: String? = null,
+    val isDemo: Boolean = false,
     val generatedAt: Long = System.currentTimeMillis(),
 ) {
     fun stage(id: String): StageCapture? = stages.firstOrNull { it.stageId == id }

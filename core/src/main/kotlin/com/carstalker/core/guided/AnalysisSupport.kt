@@ -147,6 +147,13 @@ object AnalysisSupport {
         keyPid: Int = Signals.RPM,
         metrics: Map<String, Double> = emptyMap(),
         notes: List<String> = emptyList(),
+        outcome: StageOutcome = when {
+            stage.outcome == StageOutcome.SKIPPED -> StageOutcome.SKIPPED
+            stage.outcome == StageOutcome.INTERRUPTED || !stage.completed -> StageOutcome.INTERRUPTED
+            valid -> StageOutcome.VALID
+            else -> StageOutcome.INSUFFICIENT_QUALITY
+        },
+        stimulusObserved: Boolean? = null,
     ): StageSummary = StageSummary(
         stageId = stage.stageId,
         title = stage.title,
@@ -156,6 +163,8 @@ object AnalysisSupport {
         durationSeconds = stage.durationMs / 1000.0,
         effectiveHz = stage.averageHz(keyPid),
         gaps = stats(stage.series(keyPid)).gaps,
+        outcome = outcome,
+        stimulusObserved = stimulusObserved,
         metrics = metrics,
         notes = notes + stage.notes,
     )
@@ -170,6 +179,7 @@ object AnalysisSupport {
         input: AnalysisInput,
         keyPids: List<Int>,
         minHz: Double = 0.8,
+        stimulusObserved: Boolean? = null,
     ): CaptureQualitySummary {
         val missing = missingRequiredSignals(input)
         val notes = mutableListOf<String>()
@@ -192,12 +202,26 @@ object AnalysisSupport {
         val interruptions = input.stages.sumOf { it.interruptions }
         if (interruptions > 0) notes += "$interruptions stage interruption(s); mixed samples were discarded."
         if (input.adapterVoltageUsed) notes += "Adapter voltage was used instead of control-module voltage."
+        if (stimulusObserved == false) notes += "The required stimulus was not observed, so this response was not exercised."
+        val notExercised = input.stages.filter { it.outcome == StageOutcome.NOT_EXERCISED }
+        if (notExercised.isNotEmpty()) {
+            notes += "Not exercised: ${notExercised.joinToString { it.title }}."
+        }
+        val evidence = when {
+            missing.isNotEmpty() -> "Incomplete: required signals are missing."
+            !adequate -> "Limited: the sampling rate was too low for a confident interpretation."
+            stimulusObserved == false -> "Not exercised: the required stimulus was not observed."
+            interruptions > 0 -> "Limited: $interruptions interruption(s) discarded mixed samples."
+            else -> "Adequate for this test's scope."
+        }
         return CaptureQualitySummary(
             requiredSignalsPresent = missing.isEmpty(),
             samplingAdequate = adequate,
             missingSignals = missing,
             notes = notes.distinct(),
             interruptions = interruptions,
+            stimulusObserved = stimulusObserved,
+            evidenceQuality = evidence,
         )
     }
 
@@ -210,6 +234,7 @@ object AnalysisSupport {
     fun baseWarnings(input: AnalysisInput): List<String> = buildList {
         if (input.prerequisites.flashingMil) add("A flashing MIL is a stop condition for load and rev tests.")
         if (!input.prerequisites.safeLocationConfirmed) add("A safe, stationary location was not confirmed.")
+        if (input.connectionLost) add("The adapter stopped answering during the test. Only the stages captured before the interruption are included.")
     }.distinct()
 
     fun format(value: Double, decimals: Int = 1): String =
@@ -249,24 +274,56 @@ object AnalysisSupport {
         warnings: List<String> = emptyList(),
         nextSteps: List<String> = emptyList(),
         limitations: List<String> = emptyList(),
-    ): GuidedResult = GuidedResult(
-        diagnosticId = input.definition.id,
-        definitionVersion = input.definition.version,
-        title = input.definition.title,
-        status = status,
-        confidence = confidence,
-        summary = summary,
-        observations = observations,
-        findings = findings,
-        stages = stages,
-        quality = quality,
-        limitations = (baseLimitations(input) + limitations).distinct(),
-        warnings = (baseWarnings(input) + warnings).distinct(),
-        nextSteps = nextSteps.distinct(),
-        generatedAt = input.generatedAt,
-        profile = input.capabilities.profile,
-        stagesSkipped = input.skippedStages,
-    )
+    ): GuidedResult {
+        val profile = input.capabilities.profile
+        val profileIncomplete = when (input.definition.engineRequirement) {
+            EngineRequirement.ANY -> false
+            EngineRequirement.PETROL, EngineRequirement.DIESEL -> profile.fuelType == FuelType.UNKNOWN
+            EngineRequirement.PETROL_NATURALLY_ASPIRATED ->
+                profile.fuelType == FuelType.UNKNOWN || profile.aspiration == Aspiration.UNKNOWN
+            EngineRequirement.FORCED_INDUCTION -> profile.aspiration != Aspiration.FORCED_INDUCTION
+        }
+        val effectiveConfidence = if (profileIncomplete && confidence == ResultConfidence.HIGH) {
+            ResultConfidence.MEDIUM
+        } else {
+            confidence
+        }
+        val effectiveQuality = if (profileIncomplete) {
+            quality.copy(
+                notes = (quality.notes + "Engine profile is incomplete, so confidence is capped and the interpretation is limited.").distinct(),
+            )
+        } else {
+            quality
+        }
+        return GuidedResult(
+            diagnosticId = input.definition.id,
+            definitionVersion = input.definition.version,
+            title = input.definition.title,
+            status = status,
+            confidence = effectiveConfidence,
+            summary = summary,
+            observations = observations,
+            findings = findings,
+            stages = stages,
+            quality = effectiveQuality,
+            limitations = (baseLimitations(input) + limitations).distinct(),
+            warnings = (baseWarnings(input) + warnings).distinct(),
+            nextSteps = nextSteps.distinct(),
+            generatedAt = input.generatedAt,
+            profile = input.capabilities.profile,
+            stagesSkipped = input.skippedStages,
+            vehicleKey = input.vehicleKey,
+            adapterName = input.adapterName,
+            protocolName = input.protocolName,
+            isDemo = input.isDemo,
+            scanReadAt = input.scan.readAt,
+            dataAgeMs = if (input.scan.readAt > 0) {
+                (input.generatedAt - input.scan.readAt).coerceAtLeast(0)
+            } else {
+                0L
+            },
+        )
+    }
 
     fun unable(
         input: AnalysisInput,

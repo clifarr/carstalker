@@ -64,8 +64,8 @@ val CarStalkerTypography = Typography(
     ),
     bodySmall = TextStyle(
         fontWeight = FontWeight.Normal,
-        fontSize = 12.sp,
-        lineHeight = 16.sp,
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
     ),
     labelLarge = TextStyle(
         fontWeight = FontWeight.SemiBold,
@@ -81,9 +81,9 @@ val CarStalkerTypography = Typography(
     ),
     labelSmall = TextStyle(
         fontWeight = FontWeight.SemiBold,
-        fontSize = 10.sp,
-        lineHeight = 13.sp,
-        letterSpacing = 1.4.sp,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        letterSpacing = 1.1.sp,
     ),
 )
 

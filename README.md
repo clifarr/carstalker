@@ -6,7 +6,7 @@
 
 **Your car, decoded.** A free OBD-II app for Android that goes beyond a live dashboard — assisted diagnostics that use live data and the ECU's own self-tests to rank likely causes, show the evidence and say what it cannot prove.
 
-No accounts. No ads. No subscriptions. No in-app purchases. Under 2 MB installed.
+No accounts. No ads. No subscriptions. No in-app purchases. A 1.9 MB download.
 
 ## Not just another OBD-II dashboard
 
@@ -21,7 +21,7 @@ The app is deliberately honest about uncertainty: a P0420 plus a matching downst
 
 ### Small by design
 
-The release APK is about **1.9 MB** and the installed app is **under 2 MB** — less than 10 MB including app data. Comparable OBD apps routinely ship at tens or hundreds of megabytes because of ads, analytics, crash SDKs, bundled media and cross-platform runtimes. CarStalker has none of those: Kotlin, Jetpack Compose and a pure Kotlin protocol engine, no image assets beyond the icon, no telemetry.
+The release APK is **1.9 MB**. A fresh install takes about **5 MB**, and Android's background code optimization can grow the installed app to roughly **12 MB** — the APK is the download, not the on-device footprint. Drive recordings add about **1 MB per hour** and are kept until you delete them. Comparable OBD apps routinely ship at tens or hundreds of megabytes because of ads, analytics, crash SDKs, bundled media and cross-platform runtimes. CarStalker has none of those: Kotlin, Jetpack Compose and a pure Kotlin protocol engine, no image assets beyond the icon, no telemetry.
 
 Small also means fast to install, light on storage, and usable on an old phone left in the glovebox.
 
@@ -42,6 +42,8 @@ CarStalker is open source under the MIT license. It is currently in **beta**: th
 
 The source, the diagnostic rules and the evidence are in this repository. The app is not on Google Play yet.
 
+Release notes are in [CHANGELOG.md](CHANGELOG.md). The 2026-11-24 independent review findings and their fixes are recorded in the internal review notes, which are kept outside the published repository.
+
 Store copy, beta notes and the Play Console answers live in [docs/store-listing.md](docs/store-listing.md). The privacy policy is in [docs/privacy-policy.md](docs/privacy-policy.md) and is also available inside the app under **Settings → About → Privacy policy**.
 
 ## Download
@@ -51,7 +53,7 @@ The beta is distributed as a signed APK from [GitHub Releases](https://github.co
 - [Releases](https://github.com/clifarr/carstalker/releases)
 - Verify the SHA-256 checksum published with each release.
 - Android 8.0+ (API 26). No account or adapter is needed to try demo mode.
-- For automatic updates, add the repository to [Obtainium](https://github.com/ImranR98/Obtainium). An IzzyOnDroid listing may follow.
+- For automatic updates, add the repository to [Obtainium](https://github.com/I?mranR98/Obtainium). An IzzyOnDroid listing may follow.
 - See [docs/install.md](docs/install.md) for sideloading, Play Protect and update instructions.
 
 ## Privacy
@@ -64,7 +66,7 @@ CarStalker does not collect, transmit, sell or share personal data. Settings, ve
 
 | Guided diagnostics | Guided test in progress |
 | --- | --- |
-| ![Guided guide catalogue with vehicle profile, current codes and a Suggested guide](docs/screenshots/16-diagnose.png) | ![Guided test capturing live data at warm idle](docs/screenshots/17-guided-capture.png) |
+| ![Guided guide catalogue with vehicle profile, last code scan and a guide that matches P0420](docs/screenshots/16-diagnose.png) | ![Guided test capturing live data at warm idle](docs/screenshots/17-guided-capture.png) |
 
 | Assisted result with evidence | Trouble codes |
 | --- | --- |
@@ -82,14 +84,20 @@ CarStalker does not collect, transmit, sell or share personal data. Settings, ve
 | --- | --- |
 | ![Custom PID formula editor](docs/screenshots/11-custom-pid.png) | ![App preferences](docs/screenshots/09-settings.png) |
 
+| Dashboards | Single-value voltage dashboard |
+| --- | --- |
+| ![Dashboard switcher with blank dashboard and gauge visibility actions](docs/screenshots/19-dashboards.png) | ![A voltage-only dashboard; only this value is polled, min 12.40 V and max 15.90 V](docs/screenshots/20-dashboard-voltage.png) |
+
 The guided screenshots are from **demo mode**: a simulated 2013 BRZ with a lean-trim scenario. No hardware, account or cloud service is involved.
 
 ## What it does
 
-- **Guided diagnostics platform** — reusable, vehicle-aware tests with a capability resolver, settling/capture state machine, per-stage sampling, evidence-backed findings and an exportable result. 21 guides are registered across four phases; all are startable in at least a documented limited mode.
+- **Guided diagnostics platform** — reusable, vehicle-aware tests with a capability resolver, settling/capture state machine, per-stage sampling, evidence-backed findings and an exportable result. 21 guides are registered; all are startable in at least a documented limited mode.
 - **Deterministic, not a chatbot** — every rule is in the repository and runs offline. No AI service, no account, no cloud, no hallucinated parts list.
 - **Safety rails** — tests stop for a flashing MIL, misfire codes, overheating or voltage limits; the catalyst wizard refuses to condemn a converter when engine health or an exhaust leak could explain the code, and it warns against O2 spacers or converter deletes.
-- **Live telemetry** — canvas gauges for RPM and speed, plus sparkline tiles for load, coolant, intake temperature, MAF, throttle, fuel trims, fuel level and more. The dashboard picks the ten most useful parameters the connected car actually reports, and the parameter picker groups everything by category (engine, drivetrain, fuel, temperature, electrical, emissions).
+- **Live telemetry** — canvas gauges for RPM and speed, plus sparkline tiles for load, coolant, intake temperature, MAF, throttle, fuel trims, fuel level and more. A tile whose parameter stops producing samples is marked `stale` instead of pretending the value is live. The default dashboard picks six of the most useful parameters the connected car actually reports (up to ten can be shown), and the parameter picker groups everything by category (engine, drivetrain, fuel, temperature, electrical, emissions).
+- **Dashboard editing** — press and hold a card for one second to pick it up. It follows your finger, the cards around the drop slot move aside, and a vertical line marks where it will land. Drop it on another card to move it, or release it in place to choose a replacement from the values not already on the dashboard; values the car does not report stay visible as N/A. The gauge top is a magnetic scroll point, so the dashboard resists leaving it and settles back with the gauges on top.
+- **Multiple dashboards** — create a blank dashboard with only the values you need and hide the gauge card. Only the values on the active dashboard are polled, so a single value such as adapter voltage updates as fast as the adapter allows. Each dashboard keeps its own parameters and gauge visibility.
 - **Battery voltage from the adapter** — read with `ATRV` every cycle and shown as its own parameter (`Battery`, no OBD PID), so it works on cars whose ECU does not report PID 42. Real PID 42 (`Control module voltage`) is still available in the parameter picker but is not picked automatically.
 - **Diagnostics** — read stored, pending and permanent trouble codes with human-readable descriptions, clear codes behind a confirmation, and see MIL status.
 - **Per-ECU code scan** — when the adapter exposes CAN headers, responses are attributed to the ECU that sent them (engine and any other module that answers generic OBD requests) instead of silently keeping only the first reply.
@@ -101,7 +109,7 @@ The guided screenshots are from **demo mode**: a simulated 2013 BRZ with a lean-
 - **Readiness monitors** — misfire, fuel system, catalyst, EVAP and friends, with Ready / Not ready / N/A states for emissions checks.
 - **Vehicle identity** — VIN, calibration ID, CVN and ECU name via OBD mode 09, plus a heuristic model year and manufacturer from the public VIN/WMI prefixes.
 - **Drive recordings** — every sample is recorded to wide-format CSV (one row per tick, one column per parameter) with a metadata preamble, then share or analyse it anywhere. Legacy long-format recordings still play back.
-- **Offline playback** — open any recording without an adapter, scrub the timeline, change speed, and inspect every parameter on a live chart.
+- **Offline playback** — open any recording without an adapter, scrub the timeline, pinch the chart to zoom and pan, and inspect every parameter on a live chart.
 - **Custom PIDs** — define manufacturer-specific parameters with a formula (`A`, `B`, `C`, `D` are the response bytes), unit, range and decimals.
 - **Demo mode** — a simulated 2013 BRZ, so you can explore the whole app without hardware. It also simulates ELM327 request latency, so dashboard cycle times and guided capture sample rates look realistic instead of impossibly fast.
 
@@ -161,6 +169,7 @@ It is not an AI chatbot. There is no account, no cloud call and no generated par
 Current limits:
 
 - Generic OBD-II only; no manufacturer-specific catalyst monitor or service data.
+- Vehicle identity is best-effort: not every car answers Mode 09 PID 02/04, so the VIN or calibration ID may be unavailable. The dashboard shows what the ECU reported, labels a car without a VIN as **Vehicle** or **Unidentified vehicle**, and says that the VIN was not reported. Some UK/European models, including certain Honda Civics, only expose the VIN through manufacturer-specific diagnostics.
 - Some cars do not report downstream PID 15 or do not support Mode 06. The wizard says so and lowers its confidence instead of guessing.
 - The live comparison uses the narrowband O2 PIDs 14/15. Wideband/equivalence-ratio cars are detected and the guide marks the live comparison unavailable, leaning on Mode 06 instead.
 - ELM327 sample rate is limited; Mode 06 is preferred when available, and the live O2 trace is supporting evidence.
@@ -186,6 +195,8 @@ The response window is 400 ms (`ATST 64`). Bluetooth Classic alone costs 100-200
 The handshake resets the adapter, turns off echo and linefeeds, detects the protocol with a real `0100` exchange, then **pins** it (`ATSP<n>`) so reconnects skip the search. CAN buses also get auto formatting, flow control, headers on (so responses can be attributed to an ECU) and (for 29-bit) `ATAR`; ISO/J1850 buses keep headers off and get a longer response window. Responses are parsed from plain, header-prefixed and ELM `n:` multi-frame formats, including 29-bit CAN headers printed as four separate bytes (`18 DA F1 10 04 41 0C 0C 84`) and ISO-TP first/consecutive frame reassembly for multi-frame answers such as VIN.
 
 Latency is handled at three levels: stale bytes are discarded before every write, only parameters the ECU advertises are requested, and the [poll scheduler](core/src/main/kotlin/com/carstalker/core/obd/PollScheduler.kt) asks for fast-changing values more often than slow ones. Parameters that stop answering are dropped for the session.
+
+An ELM327 stays powered and answers `ATRV` after the ignition is switched off, so adapter voltage is never treated as proof that the vehicle is alive. After 2.5 s without an ECU answer the dashboard marks the vehicle offline, dims the gauges and hides the last readings; polling continues in the background and live values return automatically when the ECU answers again.
 
 Bluetooth discovery is always manual: tap **Scan**, pick an adapter from the list, then confirm the connection. Nothing connects in the background. Paired Classic adapters are listed without scanning.
 
@@ -285,7 +296,9 @@ app/    Android + Jetpack Compose UI
 
 - **Dark-first instrument cluster.** Carbon surfaces, a lime "volt" accent and cyan secondary, with a light theme for daylight. Gauges and sparklines are drawn with Compose Canvas; the brand mark is the same vector drawable used by the launcher icon.
 - **Polling is serialized by design.** An ELM327 is one serial link with a single request/response exchange at a time; parallel commands would desynchronise replies. Every command goes through a mutex, and any bytes left from a previous exchange are discarded before the next write.
-- **Values are polled by priority.** Adapter voltage, RPM and speed every cycle; load/coolant/throttle/intake/MAF/fuel every other cycle; everything else every fourth. Voltage is polled every cycle so cranking dips are captured.
+- **Values are polled by priority.** Adapter voltage, RPM, speed and throttle every cycle; load/coolant/relative throttle/pedal/intake/MAF/fuel every other cycle; everything else every fourth. Voltage is polled every cycle so cranking dips are captured, and throttle is polled fast because a pedal movement is over before a slow Bluetooth cycle returns. While a parameter's detail view is open it is requested every cycle, and a voltage-only dashboard uses adapter freshness rather than a leftover ECU timestamp. A tile that stops receiving samples is marked `stale` after 10 s, and the detail view shows that parameter's own sample age, so a value the ECU keeps reporting at one position is not confused with a poll that stopped working.
+- **Throttle PIDs are manufacturer-flavoured.** PIDs `0x11` (throttle position) and `0x45` (relative throttle) are the throttle body/plate on many cars, not pedal travel. Some ECUs hold them at a fixed position while the pedal moves and only change them during idle-stop or engine-state transitions. Compare with **Accelerator pedal D/E** (`0x49`/`0x4A`) before treating a static value as a sensor fault.
+- **Adapter liveness is not vehicle liveness.** The ELM327 keeps answering `ATRV` with the ignition off. A [freshness monitor](core/src/main/kotlin/com/carstalker/core/obd/LiveDataFreshness.kt) waits for a failed ECU request, then hides the last engine values and reports the vehicle as offline; it recovers as soon as a PID answers again.
 - **Metric is canonical.** Values are decoded in metric and converted for display; CSV recordings always keep metric units.
 - **Wide format, not long format.** Recordings write one row per sample tick with one column per channel, so a spreadsheet or MoTeC i2 can read them without a pivot. Missing samples are blank rather than silently stale.
 - **One report model.** The PDF renderer and plain-text share path both consume the same `DiagnosticReport`, so a report cannot disagree with itself.

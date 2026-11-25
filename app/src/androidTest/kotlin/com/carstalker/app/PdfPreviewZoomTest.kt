@@ -37,7 +37,7 @@ class PdfPreviewZoomTest {
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 .putExtra("demo", true),
         )
-        if (!device.wait(Until.hasObject(By.text("LIVE TELEMETRY")), 10_000)) {
+        if (!device.wait(Until.hasObject(By.text("Dashboard")), 10_000)) {
             val dash = device.wait(Until.findObject(By.text("Dash")), 5_000)
             if (dash != null) {
                 dash.click()
@@ -46,7 +46,7 @@ class PdfPreviewZoomTest {
                 device.wait(Until.findObject(By.text("Start demo")), 5_000)?.click()
             }
         }
-        assertTrue(device.wait(Until.hasObject(By.text("LIVE TELEMETRY")), 20_000))
+        assertTrue("Dashboard did not appear", device.wait(Until.hasObject(By.text("Dashboard")), 20_000))
         device.findObject(By.text("Codes")).click()
         val preview = device.wait(Until.findObject(By.desc("Preview PDF report")), 10_000)
         assertTrue("Preview action missing", preview != null)

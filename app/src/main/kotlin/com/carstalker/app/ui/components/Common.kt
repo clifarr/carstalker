@@ -6,6 +6,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,6 +43,21 @@ import com.carstalker.app.ui.theme.LocalStalkerColors
 import java.util.Locale
 
 /** Small status capsule with an optional pulsing dot. */
+/** Respect the system "remove animations" accessibility setting. */
+@Composable
+fun animationsEnabled(): Boolean {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                context.contentResolver,
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f,
+            ) > 0f
+        }.getOrDefault(true)
+    }
+}
+
 @Composable
 fun StatusPill(
     text: String,
@@ -49,7 +66,8 @@ fun StatusPill(
     pulsing: Boolean = false,
     onClick: (() -> Unit)? = null,
 ) {
-    val alpha = if (pulsing) {
+    val animations = animationsEnabled()
+    val alpha = if (pulsing && animations) {
         val transition = rememberInfiniteTransition(label = "pulse")
         val value by transition.animateFloat(
             initialValue = 0.35f,
@@ -150,18 +168,33 @@ fun <T> ChoiceRow(
         options.forEach { (value, label) ->
             val active = value == selected
             Surface(
-                onClick = { onSelect(value) },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .selectable(
+                        selected = active,
+                        role = androidx.compose.ui.semantics.Role.RadioButton,
+                        onClick = { onSelect(value) },
+                    ),
                 shape = RoundedCornerShape(12.dp),
                 color = if (active) stalker.accent else Color.Transparent,
             ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (active) Color.Black else stalker.muted,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(vertical = 9.dp),
-                )
+                Row(
+                    Modifier.padding(vertical = 9.dp, horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (active) {
+                        Text("✓", style = MaterialTheme.typography.labelMedium, color = Color.Black)
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (active) Color.Black else stalker.muted,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                    )
+                }
             }
         }
     }

@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -58,6 +60,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.ui.CarStalkerViewModel
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
@@ -82,7 +85,13 @@ private const val STEP_CAPTURE = 2
 private const val STEP_QUESTIONS = 3
 
 @Composable
-fun CatalystFlowScreen(viewModel: CarStalkerViewModel, onBack: () -> Unit) {
+fun CatalystFlowScreen(
+    viewModel: CarStalkerViewModel,
+    onBack: () -> Unit,
+    onOpenConnect: () -> Unit,
+) {
+    val connection by viewModel.connection.collectAsStateWithLifecycle()
+    val connected = connection is ConnectionState.Ready
     val report by viewModel.dtcReport.collectAsStateWithLifecycle()
     val capture by viewModel.captureData.collectAsStateWithLifecycle()
     val progress by viewModel.captureProgress.collectAsStateWithLifecycle()
@@ -102,6 +111,18 @@ fun CatalystFlowScreen(viewModel: CarStalkerViewModel, onBack: () -> Unit) {
     var downstreamResponse by remember { mutableStateOf(Answer.UNKNOWN) }
     var inletTemp by remember { mutableStateOf("") }
     var outletTemp by remember { mutableStateOf("") }
+
+    // One predicate drives the gate. A danger condition always blocks the capture, even when a
+    // positive attestation was also ticked.
+    val liveMisfireCodes = (report.stored + report.pending).filter { it.code.startsWith("P030") }
+    val gate = CatalystWizard.safetyGate(
+        engineHealthy = engineHealthy,
+        fuelLevelOk = fuelLevelOk,
+        flashingMil = flashingMil,
+        activeMisfireCodes = liveMisfireCodes.map { it.code },
+    )
+    val canProceed = gate.canProceed
+    val liveSafetyStop = !gate.canProceed && (flashingMil || liveMisfireCodes.isNotEmpty())
 
     LaunchedEffect(Unit) {
         if (viewModel.wizardResult.value == null) {
@@ -150,10 +171,15 @@ fun CatalystFlowScreen(viewModel: CarStalkerViewModel, onBack: () -> Unit) {
             )
 
             !started -> {
-                CatalystIntroCard(onStart = {
-                    started = true
-                    step = STEP_PREPARE
-                })
+                CatalystIntroCard(
+                    connected = connected,
+                    onStart = {
+                        started = true
+                        step = STEP_PREPARE
+                    },
+                    onConnect = onOpenConnect,
+                    onTryDemo = viewModel::connectDemo,
+                )
             }
 
             else -> {
@@ -166,7 +192,10 @@ fun CatalystFlowScreen(viewModel: CarStalkerViewModel, onBack: () -> Unit) {
                         fuelLevelOk = fuelLevelOk,
                         oilCoolantOk = oilCoolantOk,
                         flashingMil = flashingMil,
-                        onEngineHealthy = { engineHealthy = it },
+                        onEngineHealthy = {
+                            engineHealthy = it
+                            if (it) flashingMil = false
+                        },
                         onFuelLevelOk = { fuelLevelOk = it },
                         onOilCoolantOk = {
                             oilCoolantOk = it
@@ -175,21 +204,34 @@ fun CatalystFlowScreen(viewModel: CarStalkerViewModel, onBack: () -> Unit) {
                                 coolantLoss = Answer.NO
                             }
                         },
-                        onFlashingMil = { flashingMil = it },
+                        onFlashingMil = {
+                            flashingMil = it
+                            if (it) engineHealthy = false
+                        },
+                        canProceed = canProceed && connected,
+                        connected = connected,
                         onReadCodes = viewModel::readCodes,
                         onReadMode06 = viewModel::readMode06,
                         onBack = { step = STEP_INTRO },
-                        onNext = { step = STEP_CAPTURE },
+                        onNext = { if (canProceed) step = STEP_CAPTURE },
                     )
 
                     STEP_CAPTURE -> CaptureStep(
                         capture = capture,
                         progress = progress,
                         mode06 = report.mode06,
-                        onStart = viewModel::startCatalystCapture,
+                        safetyStop = !connected || liveSafetyStop,
+                        safetyReason = if (!connected) {
+                            "The adapter is disconnected. Reconnect before capturing O2 data."
+                        } else {
+                            gate.blockedReason
+                        },
+                        onStart = {
+                            if (connected && !liveSafetyStop) viewModel.startCatalystCapture()
+                        },
                         onBack = { step = STEP_PREPARE },
-                        onNext = { step = STEP_QUESTIONS },
-                        onSkip = { step = STEP_QUESTIONS },
+                        onNext = { if (connected && !liveSafetyStop) step = STEP_QUESTIONS },
+                        onSkip = { if (connected && !liveSafetyStop) step = STEP_QUESTIONS },
                     )
 
                     STEP_QUESTIONS -> QuestionsStep(
@@ -234,7 +276,12 @@ fun CatalystFlowScreen(viewModel: CarStalkerViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun CatalystIntroCard(onStart: () -> Unit) {
+private fun CatalystIntroCard(
+    connected: Boolean,
+    onStart: () -> Unit,
+    onConnect: () -> Unit,
+    onTryDemo: () -> Unit,
+) {
     val stalker = LocalStalkerColors.current
     StalkerCard(accent = stalker.accent) {
         Column {
@@ -284,10 +331,26 @@ private fun CatalystIntroCard(onStart: () -> Unit) {
                 Text("• $it", style = MaterialTheme.typography.bodySmall, color = stalker.muted)
             }
             Spacer(Modifier.height(14.dp))
-            Button(
-                onClick = onStart,
-                colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
-            ) { Text("Start guided test") }
+            if (connected) {
+                Button(
+                    onClick = onStart,
+                    colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
+                ) { Text("Start guided test") }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onConnect,
+                        colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
+                    ) { Text("Connect adapter") }
+                    OutlinedButton(onClick = onTryDemo) { Text("Try demo") }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "The catalogue stays readable without an adapter; the test needs a connection.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+            }
         }
     }
 }
@@ -334,6 +397,8 @@ private fun PrepareStep(
     onOilCoolantOk: (Boolean) -> Unit,
     onFlashingMil: (Boolean) -> Unit,
     onReadCodes: () -> Unit,
+    canProceed: Boolean,
+    connected: Boolean,
     onReadMode06: () -> Unit,
     onBack: () -> Unit,
     onNext: () -> Unit,
@@ -370,12 +435,12 @@ private fun PrepareStep(
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onReadCodes) {
+                OutlinedButton(onClick = onReadCodes, enabled = connected) {
                     Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Read codes")
                 }
-                OutlinedButton(onClick = onReadMode06) {
+                OutlinedButton(onClick = onReadMode06, enabled = connected) {
                     Icon(Icons.Rounded.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
                     Text("Read Mode 06")
@@ -411,11 +476,24 @@ private fun PrepareStep(
                     color = stalker.danger,
                 )
             }
+            if (!canProceed) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    when {
+                        !connected -> "Connect an adapter or start the demo to read codes and run the capture."
+                        flashingMil -> "Next is blocked. A flashing MIL or active misfire must be repaired before a catalyst test."
+                        else -> "Confirm the engine is not misfiring and the fuel level is in range to enable the capture."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.warning,
+                )
+            }
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 TextButton(onClick = onBack) { Text("Back") }
                 Button(
                     onClick = onNext,
+                    enabled = canProceed,
                     colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
                 ) { Text("Next: capture") }
             }
@@ -423,11 +501,14 @@ private fun PrepareStep(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CaptureStep(
     capture: CaptureData?,
     progress: CaptureProgress?,
     mode06: Mode06Report,
+    safetyStop: Boolean,
+    safetyReason: String?,
     onStart: () -> Unit,
     onBack: () -> Unit,
     onNext: () -> Unit,
@@ -450,6 +531,14 @@ private fun CaptureStep(
                 color = stalker.muted,
             )
             Spacer(Modifier.height(10.dp))
+            if (safetyStop) {
+                Text(
+                    safetyReason ?: "The capture is blocked by a safety condition.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.danger,
+                )
+                Spacer(Modifier.height(10.dp))
+            }
             if (progress != null) {
                 LinearProgressIndicator(
                     progress = { progress.fraction },
@@ -466,6 +555,7 @@ private fun CaptureStep(
             } else {
                 Button(
                     onClick = onStart,
+                    enabled = !safetyStop,
                     colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
                 ) {
                     Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -493,12 +583,15 @@ private fun CaptureStep(
                 }
             }
             Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 TextButton(onClick = onBack, enabled = progress == null) { Text("Back") }
-                TextButton(onClick = onSkip, enabled = progress == null) { Text("Skip capture") }
+                TextButton(onClick = onSkip, enabled = progress == null && !safetyStop) { Text("Skip capture") }
                 Button(
                     onClick = onNext,
-                    enabled = progress == null,
+                    enabled = progress == null && !safetyStop,
                     colors = ButtonDefaults.buttonColors(containerColor = stalker.accent, contentColor = Color.Black),
                 ) { Text("Next: questions") }
             }
@@ -544,7 +637,7 @@ private fun QuestionsStep(
             Spacer(Modifier.height(10.dp))
             Text("Optional: converter inlet/outlet temperature", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
             Text(
-                "A healthy converter is usually 20–55 °C hotter at the outlet at 2,500 rpm. Skip if you do not have an IR thermometer.",
+                "A temperature difference can support a diagnosis, but it varies with load, emissivity and measurement location. Skip this if you do not have an IR thermometer; it is not a standalone converter test.",
                 style = MaterialTheme.typography.bodySmall,
                 color = stalker.muted,
             )
@@ -786,10 +879,20 @@ private fun O2SignalChart(capture: CaptureData?, modifier: Modifier = Modifier) 
 }
 
 private fun mode06Label(report: Mode06Report): String {
-    val results = report.results.filter { it.mid == 0x21 || it.mid == 0x22 }
+    if (!report.countsAvailable) {
+        return when (report.state) {
+            com.carstalker.core.obd.MonitorDataState.NOT_REQUESTED -> "not checked"
+            com.carstalker.core.obd.MonitorDataState.UNSUPPORTED -> "not supported"
+            com.carstalker.core.obd.MonitorDataState.FAILED_TO_READ -> "could not be read"
+            com.carstalker.core.obd.MonitorDataState.IN_PROGRESS -> "reading"
+            com.carstalker.core.obd.MonitorDataState.STALE -> "outdated"
+            com.carstalker.core.obd.MonitorDataState.AVAILABLE -> "not completed"
+        }
+    }
+    val results = report.trustedResults.filter { it.mid == 0x21 || it.mid == 0x22 }
     return when {
         results.any { it.passed == false } -> "FAIL"
         results.any { it.passed == true } -> "PASS"
-        else -> "not completed / not supported"
+        else -> "not completed"
     }
 }

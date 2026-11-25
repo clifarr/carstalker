@@ -57,6 +57,8 @@ data class ReportMode06(
     val min: String?,
     val max: String?,
     val state: String,
+    val mappingTrusted: Boolean = true,
+    val raw: String? = null,
 )
 
 data class ReportWizardCause(
@@ -71,6 +73,7 @@ data class ReportWizardResult(
     val title: String,
     val summary: String,
     val confidence: String,
+    val ruleVersion: String? = null,
     val causes: List<ReportWizardCause>,
     val evidence: List<String>,
     val warnings: List<String>,
@@ -91,9 +94,13 @@ data class DiagnosticReport(
     val modules: List<ReportModule>,
     val freezeFrames: List<ReportFreezeFrame> = emptyList(),
     val mode06: List<ReportMode06> = emptyList(),
+    /** Explains why Mode 06 counts are absent; absence is not zero failures. */
+    val mode06Note: String? = null,
     val monitors: List<ReportMonitor> = emptyList(),
     val wizardResults: List<ReportWizardResult> = emptyList(),
     val notes: String? = null,
+    /** True when the report came from the demo transport; it must never look like a real car. */
+    val isDemo: Boolean = false,
 ) {
     private val dateFormat: DateTimeFormatter =
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.US)
@@ -109,6 +116,7 @@ data class DiagnosticReport(
             appendLine()
         }
         appendLine("CarStalker diagnostic report")
+        if (isDemo) appendLine("DEMO DATA — simulated vehicle, not a real diagnostic")
         appendLine("Generated: $generatedLabel")
         appendLine("Vehicle: ${vehicle.title}")
         vehicle.vin?.let { appendLine("VIN: $it") }

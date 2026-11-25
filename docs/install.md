@@ -5,7 +5,7 @@ CarStalker is distributed as a signed APK from GitHub Releases. It is not on Goo
 ## Requirements
 
 - Android 8.0 (API 26) or newer.
-- About 5 MB of free space.
+- About 15 MB of free space. The APK is 1.9 MB; Android's code optimization adds a few megabytes, and recordings use about 1 MB per hour.
 - An OBD-II adapter for live data: Bluetooth Classic, Bluetooth LE, USB (FTDI, CH340, CP210x, PL2303, CDC-ACM) or a Wi-Fi ELM327. **Demo mode works without hardware.**
 
 ## Download

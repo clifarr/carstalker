@@ -52,7 +52,7 @@ object CatalystWizard {
             "Do not interact with the phone while driving. Use a passenger or set up the capture before you drive.",
             "Hot exhaust and moving engine parts: use gloves, eye protection, and never work under a running car.",
             "A flashing check-engine light or active misfire can destroy the catalyst. Stop driving and fix the misfire first.",
-            "Do not use O2 spacers, non-foulers or a converter delete to fake the monitor. It is illegal and does not fix the cause.",
+            "Do not use O2 spacers, non-foulers or a converter delete to fake the monitor. It may violate emissions laws where you drive and does not fix the cause.",
         ),
     )
 
@@ -63,6 +63,37 @@ object CatalystWizard {
         durationMs = 30_000,
         minSamplesPerPid = 20,
     )
+
+    /** Result of the catalyst wizard's safety gate. */
+    data class SafetyGate(
+        val canProceed: Boolean,
+        val blockedReason: String?,
+    )
+
+    /**
+     * One predicate for the catalyst wizard. A danger condition always wins over a positive
+     * attestation, and the capture is blocked until every required positive is confirmed.
+     */
+    fun safetyGate(
+        engineHealthy: Boolean,
+        fuelLevelOk: Boolean,
+        flashingMil: Boolean,
+        activeMisfireCodes: List<String> = emptyList(),
+    ): SafetyGate {
+        val misfires = activeMisfireCodes.filter { it.trim().uppercase().startsWith("P030") }
+        val reason = when {
+            flashingMil ->
+                "A flashing MIL or active misfire can destroy the catalyst. Stop here and fix the misfire first."
+            misfires.isNotEmpty() ->
+                "Misfire code(s) ${misfires.joinToString()} are present. Fix the misfire before testing the catalyst."
+            !engineHealthy ->
+                "Confirm the engine is not misfiring and the MIL is not flashing."
+            !fuelLevelOk ->
+                "Confirm the fuel level is between 1/4 and 3/4."
+            else -> null
+        }
+        return SafetyGate(canProceed = reason == null, blockedReason = reason)
+    }
 
     fun analyze(input: CatalystInput): WizardResult {
         val codes = input.dtcs.map { it.trim().uppercase() }.filter { it.isNotEmpty() }.distinct()
@@ -84,6 +115,22 @@ object CatalystWizard {
 
         val quality = captureQuality(input.capture, upstreamStats, downstreamStats)
         val mode06 = mode06Catalyst(input.mode06)
+        // Sparse or asynchronous O2 sampling cannot support a high-confidence converter verdict.
+        val upstreamHz = input.capture?.averageHz(UPSTREAM_PID) ?: 0.0
+        val downstreamHz = input.capture?.averageHz(DOWNSTREAM_PID) ?: 0.0
+        val samplingAdequate = input.capture != null &&
+            upstreamStats.count >= 30 &&
+            downstreamStats.count >= 30 &&
+            upstreamStats.switchingCount >= 8 &&
+            minOf(upstreamHz, downstreamHz) >= 1.5 &&
+            input.capture.durationMs >= 20_000
+        val samplingNote = if (samplingAdequate) {
+            null
+        } else {
+            "O2 sampling was too sparse or too slow for a high-confidence converter verdict " +
+                "(${oneDecimal(upstreamStats.frequencyHz)} Hz upstream, ${oneDecimal(downstreamStats.frequencyHz)} Hz downstream, " +
+                "${upstreamStats.switchingCount} switches)."
+        }
         val engineRisk = answers.flashingMil ||
             misfireCodes.isNotEmpty() ||
             trimCodes.isNotEmpty() ||
@@ -129,9 +176,11 @@ object CatalystWizard {
 
         val catConfirmed = !engineRisk && !exhaustRisk && !downstreamStuck && !downstreamLazy &&
             mode06 != Mode06State.PASS &&
-            ((mode06 == Mode06State.FAIL && downstreamMirrors) ||
-                (downstreamMirrors && tempAgainstCat) ||
-                (mode06 == Mode06State.FAIL && tempAgainstCat))
+            (
+                (mode06 == Mode06State.FAIL && downstreamMirrors && samplingAdequate) ||
+                    (downstreamMirrors && tempAgainstCat && samplingAdequate) ||
+                    (mode06 == Mode06State.FAIL && tempAgainstCat && samplingAdequate)
+                )
         val catProbablyOk = !engineRisk && !exhaustRisk && !downstreamStuck && !downstreamLazy &&
             !downstreamMirrors &&
             (mode06 == Mode06State.PASS || (mode06 == Mode06State.UNKNOWN && downstreamSteady))
@@ -194,8 +243,13 @@ object CatalystWizard {
                 id = "catalyst_worn",
                 title = "Catalytic converter is likely worn",
                 likelihood = Likelihood.LIKELY,
-                confidence = if (mode06 == Mode06State.FAIL && downstreamMirrors) Confidence.HIGH else Confidence.MEDIUM,
-                explanation = "The downstream sensor follows the upstream switching and/or the ECU's catalyst monitor failed, after engine and exhaust faults were ruled out.",
+                confidence = if (mode06 == Mode06State.FAIL && downstreamMirrors && samplingAdequate) {
+                    Confidence.HIGH
+                } else {
+                    Confidence.MEDIUM
+                },
+                explanation = "The downstream sensor follows the upstream switching and/or the ECU's catalyst monitor failed, after engine and exhaust faults were ruled out. " +
+                    (samplingNote ?: "The O2 sample rate was adequate for this comparison."),
                 evidence = buildList {
                     if (mode06 == Mode06State.FAIL) add("Mode 06 catalyst test failed")
                     if (downstreamMirrors) add("Downstream O2 mirrors upstream switching")
@@ -330,12 +384,25 @@ object CatalystWizard {
         evidence += WizardEvidence(
             "Mode 06 catalyst",
             when (mode06) {
-                Mode06State.PASS -> "PASS"
-                Mode06State.FAIL -> "FAIL"
-                Mode06State.UNKNOWN -> "Not completed / not supported"
+                Mode06State.PASS -> "PASS (verified monitor identity)"
+                Mode06State.FAIL -> "FAIL (verified monitor identity)"
+                Mode06State.UNKNOWN -> when (input.mode06.state) {
+                    com.carstalker.core.obd.MonitorDataState.NOT_REQUESTED -> "Not checked"
+                    com.carstalker.core.obd.MonitorDataState.UNSUPPORTED -> "Not supported"
+                    com.carstalker.core.obd.MonitorDataState.FAILED_TO_READ -> "Could not read"
+                    else -> "No completed catalyst monitor test"
+                }
             },
             "Mode 06",
         )
+        val untrusted = input.mode06.results.count { !it.mappingTrusted }
+        if (untrusted > 0) {
+            evidence += WizardEvidence(
+                "Mode 06 decoding",
+                "$untrusted result(s) had an unrecognised monitor/unit mapping and were excluded",
+                "Mode 06",
+            )
+        }
         if (upstreamStats.count > 0) {
             evidence += WizardEvidence(
                 "Upstream O2",
@@ -375,7 +442,7 @@ object CatalystWizard {
         }
 
         warnings += "Do not replace the catalytic converter on P0420/P0430 alone."
-        warnings += "Do not use O2 spacers, non-foulers or a converter delete. It is illegal and does not fix the cause."
+        warnings += "Do not use O2 spacers, non-foulers or a converter delete. It may violate emissions laws where you drive and does not fix the cause."
         if (!answers.engineHealthyConfirmed) {
             warnings += "You have not confirmed the engine is healthy; treat this result as provisional."
         }
@@ -388,6 +455,7 @@ object CatalystWizard {
         if (catConfirmed) {
             warnings += "Confirm with a second test (temperature or backpressure) before buying a converter."
         }
+        samplingNote?.let { warnings += it }
         if (sensorLikely) {
             warnings += "Check the sensor circuit and part number before replacing the converter."
         }
@@ -404,10 +472,11 @@ object CatalystWizard {
         val rawConfidence = when {
             engineRisk || exhaustRisk -> Confidence.LOW
             conflicting -> Confidence.MEDIUM
-            catConfirmed && mode06 == Mode06State.FAIL && downstreamMirrors -> Confidence.HIGH
-            catProbablyOk && mode06 == Mode06State.PASS && downstreamSteady -> Confidence.HIGH
-            sensorLikely && (downstreamStuck || downstreamLazy) -> Confidence.HIGH
-            quality?.usable == true || mode06 != Mode06State.UNKNOWN -> Confidence.MEDIUM
+            catConfirmed && mode06 == Mode06State.FAIL && downstreamMirrors && samplingAdequate -> Confidence.HIGH
+            catProbablyOk && mode06 == Mode06State.PASS && downstreamSteady && samplingAdequate -> Confidence.HIGH
+            sensorLikely && (downstreamStuck || downstreamLazy) && samplingAdequate -> Confidence.HIGH
+            mode06 == Mode06State.FAIL && !engineRisk && !exhaustRisk -> Confidence.MEDIUM
+            samplingAdequate && (quality?.usable == true || mode06 != Mode06State.UNKNOWN) -> Confidence.MEDIUM
             else -> Confidence.LOW
         }
         val confidence = if (prepIncomplete && rawConfidence == Confidence.HIGH) Confidence.MEDIUM else rawConfidence
@@ -443,7 +512,8 @@ object CatalystWizard {
     private enum class Mode06State { PASS, FAIL, UNKNOWN }
 
     private fun mode06Catalyst(report: Mode06Report): Mode06State {
-        val results = report.results.filter { it.mid == 0x21 || it.mid == 0x22 }
+        if (report.state != com.carstalker.core.obd.MonitorDataState.AVAILABLE) return Mode06State.UNKNOWN
+        val results = report.trustedResults.filter { it.mid == 0x21 || it.mid == 0x22 }
         if (results.isEmpty()) return Mode06State.UNKNOWN
         if (results.any { it.passed == false }) return Mode06State.FAIL
         if (results.any { it.passed == true }) return Mode06State.PASS

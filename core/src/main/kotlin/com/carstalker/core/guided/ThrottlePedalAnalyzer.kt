@@ -31,16 +31,25 @@ object ThrottlePedalAnalyzer {
     )
 
     fun analyze(input: AnalysisInput): GuidedResult {
-        val quality = AnalysisSupport.quality(
-            input,
-            keyPids = listOf(Signals.RPM, Signals.THROTTLE),
-            minHz = 0.8,
-        )
         val stages = input.definition.stages.mapNotNull { definitionStage ->
             input.stage(definitionStage.id)?.let { analyzeStage(it) }
         }
         val idle = stages.firstOrNull { it.stage.stageId == "warm_idle" }
         val response = stages.firstOrNull { it.stage.stageId == "throttle_response" }
+        val stimulusObserved = response != null &&
+            response.throttle.count >= MIN_SAMPLES &&
+            (
+                response.throttle.range >= THROTTLE_MOVEMENT_PCT ||
+                    response.pedalD.range >= THROTTLE_MOVEMENT_PCT ||
+                    response.pedalE.range >= THROTTLE_MOVEMENT_PCT ||
+                    response.rpm.range >= RPM_MOVEMENT
+                )
+        val quality = AnalysisSupport.quality(
+            input,
+            keyPids = listOf(Signals.RPM, Signals.THROTTLE),
+            minHz = 0.8,
+            stimulusObserved = stimulusObserved,
+        )
 
         val observations = mutableListOf<GuidedObservation>()
         val findings = mutableListOf<GuidedFinding>()
@@ -104,7 +113,12 @@ object ThrottlePedalAnalyzer {
             nextSteps += "Have the drive-by-wire fault assessed professionally before normal driving."
         }
 
-        if (response != null && response.throttle.available && response.rpm.available) {
+        if (!stimulusObserved) {
+            warnings += "No throttle, pedal or RPM movement was observed in the response stage. The channels were not exercised, so a healthy correlation cannot be claimed."
+            nextSteps += "Repeat the gentle throttle blip (or a passenger-assisted road test) so the channels actually move, then re-run the test."
+        }
+
+        if (stimulusObserved && response != null && response.throttle.available && response.rpm.available) {
             val throttleMovement = response.throttle.range
             val rpmMovement = response.rpm.range
             if (rpmMovement > RPM_MOVEMENT && throttleMovement < THROTTLE_MOVEMENT_PCT) {
@@ -164,7 +178,7 @@ object ThrottlePedalAnalyzer {
             }
         }
 
-        correlate(
+        if (stimulusObserved) correlate(
             id = "pedal_throttle_disagreement",
             title = "Pedal and throttle channels do not track",
             aPid = Signals.PEDAL_D,
@@ -174,7 +188,7 @@ object ThrottlePedalAnalyzer {
             alternatives = listOf("Normal pedal-to-throttle mapping", "Throttle position sensor/circuit", "Pedal sensor/circuit", "Sampling difference"),
             nextCheck = "Compare both channels at several steady pedal positions and inspect the circuits.",
         )
-        correlate(
+        if (stimulusObserved) correlate(
             id = "throttle_redundant_disagreement",
             title = "Throttle channels disagree",
             aPid = Signals.THROTTLE,
@@ -184,7 +198,7 @@ object ThrottlePedalAnalyzer {
             alternatives = listOf("Different scaling/reference", "Throttle sensor/circuit", "Wiring/connector", "Sampling difference"),
             nextCheck = "Check the throttle sensor circuits and compare the scaled values with service information.",
         )
-        correlate(
+        if (stimulusObserved) correlate(
             id = "pedal_redundant_disagreement",
             title = "Pedal channels disagree",
             aPid = Signals.PEDAL_D,
@@ -194,7 +208,7 @@ object ThrottlePedalAnalyzer {
             alternatives = listOf("Pedal sensor/circuit", "Wiring/connector", "Reference voltage", "Sampling difference"),
             nextCheck = "Inspect the pedal connector and compare both channels with service information.",
         )
-        correlate(
+        if (stimulusObserved) correlate(
             id = "commanded_throttle_disagreement",
             title = "Commanded and reported throttle disagree",
             aPid = Signals.COMMANDED_THROTTLE,
@@ -231,25 +245,35 @@ object ThrottlePedalAnalyzer {
             input.cancelled -> DiagnosticStatus.CANCELLED
             correlationFindings.isNotEmpty() -> DiagnosticStatus.SUSPICIOUS
             findings.isNotEmpty() -> DiagnosticStatus.INCONCLUSIVE
-            response != null -> DiagnosticStatus.NO_ANOMALY_DETECTED
+            stimulusObserved -> DiagnosticStatus.NO_ANOMALY_DETECTED
             else -> DiagnosticStatus.INCONCLUSIVE
         }
         val summary = when (status) {
-            DiagnosticStatus.NO_ANOMALY_DETECTED -> "The available throttle/pedal channels moved together during the response. This does not prove every drive-by-wire channel is healthy."
+            DiagnosticStatus.NO_ANOMALY_DETECTED -> "The available throttle/pedal channels moved together during an observed throttle response. This does not prove every drive-by-wire channel is healthy."
             DiagnosticStatus.SUSPICIOUS -> "A throttle/pedal channel disagreement was found. Treat it as a reason for professional assessment, not a parts order."
             DiagnosticStatus.SAFETY_STOPPED -> input.safetyStopReason.orEmpty()
             DiagnosticStatus.CANCELLED -> "Test cancelled."
-            else -> "The capture did not contain enough correlated channels for a conclusion."
+            else -> "The throttle response was not exercised, so there is no correlation to interpret. Repeat the blip so the channels move."
         }
 
         val stageSummaries = stages.map { analysis ->
+            val isResponse = analysis.stage.stageId == "throttle_response"
             AnalysisSupport.stageSummary(
                 stage = analysis.stage,
-                valid = analysis.valid,
+                valid = if (isResponse) analysis.valid && stimulusObserved else analysis.valid,
                 keyPid = Signals.THROTTLE,
+                outcome = when {
+                    isResponse && !stimulusObserved -> StageOutcome.NOT_EXERCISED
+                    else -> analysis.stage.outcome
+                },
+                stimulusObserved = if (isResponse) stimulusObserved else null,
                 metrics = buildMap {
                     if (analysis.throttle.available) put("throttle_pct", analysis.throttle.median)
                     if (analysis.pedalD.available) put("pedal_d_pct", analysis.pedalD.median)
+                    if (isResponse) {
+                        put("throttle_range_pct", analysis.throttle.range)
+                        put("rpm_range", analysis.rpm.range)
+                    }
                 },
             )
         }

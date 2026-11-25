@@ -163,6 +163,10 @@ mixture interpretations instead of petrol naturally-aspirated rules.
 
 ## Current guides
 
+The app presents these guides by problem category (engine and fuel, emissions, electrical and
+starting, airflow/boost/sensors, vehicle health, driving symptoms). The phase column below is
+implementation history, not the user-facing grouping.
+
 | Phase | Guide | Status | Notes |
 |---|---|---|---|
 | 1 | Catalyst vs oxygen sensor | Existing dedicated flow | Mode 06 + narrowband O2 capture + manual observations. Registered as `catalyst_o2`. |
@@ -222,8 +226,9 @@ the app settings and refuses to compare when the vehicle profile or conditions d
 - marked power-loss events, driver lift and passive marker storage;
 - baseline creation, matched comparison, airflow shift and condition mismatch.
 
-The demo adapter can be steered from the capture screen (warm idle, 2,500 rpm, engine off,
-electrical load, cold start, cranking, driving cycle) so the whole flow can be exercised without a car. It
+The demo adapter can be steered from the capture screen (driving cycle, warm idle, 2,500 rpm,
+2,000 rpm, throttle blip, rich idle, voltage spikes, engine off, electrical load, cold start,
+cranking) so the whole flow can be exercised without a car. It
 simulates per-command adapter latency and jitter, so cycle times and effective sample rates are
 realistic rather than instant.
 

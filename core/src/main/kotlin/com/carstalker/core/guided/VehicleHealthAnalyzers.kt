@@ -65,12 +65,12 @@ object ReadinessAnalyzer {
                 title = "The MIL is on",
                 evidenceLevel = EvidenceLevel.STRONG,
                 confidence = ResultConfidence.HIGH,
-                explanation = "The ECU reports an illuminated malfunction indicator lamp. Read and diagnose the stored codes before presenting the vehicle for an emissions test.",
+                explanation = "The ECU reports an illuminated malfunction indicator lamp. Read and diagnose the stored codes before presenting the vehicle for an emissions inspection.",
                 supporting = listOf("MIL on"),
                 alternatives = listOf("Stored/pending fault", "Permanent code awaiting self-clear"),
                 nextCheck = "Read the codes, diagnose the fault and complete the relevant drive cycle before retesting.",
             )
-            nextSteps += "Diagnose the stored codes before an emissions test."
+            nextSteps += "Diagnose the stored codes before an emissions inspection."
         }
         if (incomplete.isNotEmpty()) {
             findings += GuidedFinding(
@@ -78,7 +78,7 @@ object ReadinessAnalyzer {
                 title = "Some readiness monitors are incomplete",
                 evidenceLevel = EvidenceLevel.WEAK,
                 confidence = ResultConfidence.LOW,
-                explanation = "Incomplete monitors are normal after a battery disconnect, code clear or recent repair. They are not proof that codes were deliberately cleared, and they can cause an emissions test to be rejected.",
+                explanation = "Incomplete monitors are normal after a battery disconnect, code clear or recent repair. They are not proof that codes were deliberately cleared, and they can cause an emissions inspection to be rejected.",
                 supporting = incomplete.map { it.name },
                 alternatives = listOf("Recent battery disconnect", "Recent code clear", "Drive cycle not completed", "Monitor not supported"),
                 nextCheck = "Complete the manufacturer's general drive cycle and re-check readiness.",
@@ -103,13 +103,13 @@ object ReadinessAnalyzer {
                 title = "Stored or pending codes are present",
                 evidenceLevel = EvidenceLevel.MODERATE,
                 confidence = ResultConfidence.MEDIUM,
-                explanation = "Stored or pending codes mean the ECU has seen a fault. They should be diagnosed before an emissions test or purchase decision.",
+                explanation = "Stored or pending codes mean the ECU has seen a fault. They should be diagnosed before an emissions inspection or purchase decision.",
                 supporting = listOf((input.scan.storedCodes + input.scan.pendingCodes).distinct().joinToString()),
                 alternatives = listOf("Intermittent fault", "Repair not yet verified", "Pending monitor failure"),
                 nextCheck = "Diagnose the reported codes and verify the repair with a drive cycle.",
             )
         }
-        if (input.scan.mode06Failures > 0) {
+        if (input.scan.mode06CountsAvailable && input.scan.mode06Failures > 0) {
             findings += GuidedFinding(
                 id = "mode06_failures",
                 title = "Mode 06 reports failing monitor tests",
@@ -131,7 +131,7 @@ object ReadinessAnalyzer {
         }
         val summary = when (status) {
             DiagnosticStatus.NO_ANOMALY_DETECTED -> "Supported readiness monitors are complete and no codes were reported in the last scan. This is not a compliance guarantee."
-            DiagnosticStatus.SUSPICIOUS -> "The scan shows a condition that should be diagnosed before an emissions test or purchase decision."
+            DiagnosticStatus.SUSPICIOUS -> "The scan shows a condition that should be diagnosed before an emissions inspection or purchase decision."
             DiagnosticStatus.SAFETY_STOPPED -> input.safetyStopReason.orEmpty()
             DiagnosticStatus.CANCELLED -> "Test cancelled."
             else -> "Readiness is incomplete. That can be normal after a disconnect or repair, but the monitors need to run."
@@ -158,7 +158,7 @@ object ReadinessAnalyzer {
                 "Readiness monitor names and support vary by vehicle and protocol.",
                 "The app cannot prove why a monitor is incomplete.",
                 "Permanent codes may remain after a repair until the ECU clears them.",
-                "A clean scan does not replace a state emissions test.",
+                "A clean scan does not replace a state emissions inspection.",
             ),
         )
     }
@@ -184,7 +184,12 @@ object UsedCarInspectionAnalyzer {
         observations += GuidedObservation(
             "Last scan",
             if (input.scan.hasScan) {
-                "${input.scan.allCodes.size} code(s), ${input.scan.mode06Failures} Mode 06 failure(s)"
+                val mode06 = if (input.scan.mode06CountsAvailable) {
+                    "${input.scan.mode06Failures} Mode 06 failure(s)"
+                } else {
+                    "Mode 06 not checked"
+                }
+                "${input.scan.allCodes.size} code(s), $mode06"
             } else {
                 "No scan data available"
             },
@@ -202,6 +207,10 @@ object UsedCarInspectionAnalyzer {
         }
         if (input.scan.allCodes.isNotEmpty()) {
             observations += GuidedObservation("Codes", input.scan.allCodes.joinToString())
+        }
+        if (!input.scan.mode06CountsAvailable) {
+            warnings += "Mode 06 self-tests were not read for this scan. They are not the same as zero failures."
+            nextSteps += "Open Codes and read Mode 06 self-tests before relying on a clean summary."
         }
 
         val keyOn = input.stages.firstOrNull { it.stageId == "key_on_engine_off" }
@@ -264,7 +273,7 @@ object UsedCarInspectionAnalyzer {
                 explanation = "Incomplete monitors can be normal after a battery disconnect, but they can also hide a recent code clear. They are not proof of tampering.",
                 supporting = monitor.monitors.filter { it.supported && !it.complete }.map { it.name },
                 alternatives = listOf("Recent battery disconnect", "Recent repair", "Drive cycle not completed", "Recent code clear"),
-                nextCheck = "Ask why readiness is incomplete and complete a drive cycle before an emissions test.",
+                nextCheck = "Ask why readiness is incomplete and complete a drive cycle before an emissions inspection.",
             )
         }
         if (voltage != null && voltage.median < VOLTAGE_LOW) {

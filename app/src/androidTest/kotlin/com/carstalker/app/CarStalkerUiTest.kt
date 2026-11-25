@@ -49,6 +49,46 @@ class CarStalkerUiTest {
     }
 
     @Test
+    fun offlineStartupOnlyKeepsOfflineTabsEnabled() {
+        val stillOnStartup = "Connect an OBD-II adapter"
+
+        click("Dash")
+        assertFalse(
+            "Dash should stay disabled without an adapter",
+            device.wait(Until.gone(By.text(stillOnStartup)), 1_500),
+        )
+        click("Diagnose")
+        assertFalse(
+            "Diagnose should stay disabled without an adapter",
+            device.wait(Until.gone(By.text(stillOnStartup)), 1_500),
+        )
+        click("Codes")
+        assertFalse(
+            "Codes should stay disabled without an adapter",
+            device.wait(Until.gone(By.text(stillOnStartup)), 1_500),
+        )
+        assertTrue(
+            "The redundant Settings button is still on the connect screen",
+            device.findObjects(By.text("Settings")).size == 1,
+        )
+        assertTrue(
+            "The redundant Recordings button is still on the connect screen",
+            device.findObjects(By.text("Recordings")).size == 1,
+        )
+
+        click("Recordings")
+        assertTrue("Recordings should stay available without an adapter", waitFor("RECORDINGS"))
+        click("Settings")
+        assertTrue("Settings should stay available without an adapter", waitFor("SETTINGS"))
+
+        // Leave the app on the startup screen for the other smoke test.
+        device.pressBack()
+        assertTrue("Back from Settings did not reach the dashboard", waitFor("No adapter connected"))
+        click("Connect adapter")
+        assertTrue("Did not return to the startup screen", waitFor(stillOnStartup))
+    }
+
+    @Test
     fun mainFlows() {
         screenshot("01-connect")
 
@@ -57,9 +97,9 @@ class CarStalkerUiTest {
         assertTrue("Demo pane did not appear", waitFor("Start demo"))
         screenshot("02-demo")
         click("Start demo")
-        assertTrue("Dashboard did not appear", waitFor("LIVE TELEMETRY", 20_000))
+        openDashboardAndResetScroll()
         assertTrue("Live status missing", waitFor("Live", 15_000))
-        Thread.sleep(2_500)
+        Thread.sleep(1_000)
         screenshot("03-dashboard")
 
         // PID detail sheet
@@ -82,9 +122,10 @@ class CarStalkerUiTest {
 
         // Recording and playback
         click("Dash")
-        assertTrue(waitFor("LIVE TELEMETRY"))
+        openDashboardAndResetScroll()
         clickDesc("Start recording")
         Thread.sleep(7_000)
+        scrollToBeginning()
         clickDesc("Stop recording")
         click("Recordings")
         assertTrue("Recordings screen did not appear", waitFor("RECORDINGS"))
@@ -97,14 +138,14 @@ class CarStalkerUiTest {
         assertTrue("Recorded session row not found", sessionRow != null)
         sessionRow!!.click()
         assertTrue("Playback screen did not open", waitFor("RECORDING", 10_000))
-        assertTrue("Play control missing", device.wait(Until.hasObject(By.desc("Play")), 5_000))
-        clickDesc("Play")
-        val started = device.wait(Until.hasObject(By.desc("Pause")), 3_000) ||
-            // A very short clip can finish before the assertion; that still counts as playback.
-            device.hasObject(By.desc("Play"))
-        assertTrue("Playback did not start", started)
-        Thread.sleep(1_200)
-        if (device.hasObject(By.desc("Pause"))) clickDesc("Pause")
+        assertFalse(
+            "The moving playhead is replaced by pinch zoom",
+            device.hasObject(By.desc("Play")),
+        )
+        val chart = device.wait(Until.findObject(By.desc("Playback chart")), 5_000)
+        assertTrue("Playback chart not found", chart != null)
+        chart!!.pinchOpen(0.6f)
+        assertTrue("Pinching did not zoom the chart", waitFor("Reset zoom", 5_000))
         screenshot("07b-playback")
         device.pressBack()
         assertTrue("Back from playback failed", waitFor("Your recordings", 5_000))
@@ -118,8 +159,8 @@ class CarStalkerUiTest {
         )
         screenshot("08-settings")
 
-        clickScrolling("Manage")
-        assertTrue("PID picker did not open", waitFor("Dashboard parameters"))
+        clickScrolling("Edit")
+        assertTrue("PID picker did not open", waitFor("DASHBOARD PARAMETERS"))
         screenshot("09-pid-picker")
         // Close explicitly: the picker is a full-screen dialog and back is not reliable on all ROMs.
         // The settings page stays scrolled behind the dialog, so check that the dialog is gone
@@ -151,8 +192,7 @@ class CarStalkerUiTest {
         scrollToBeginning()
         click("Light")
         click("Dash")
-        assertTrue(waitFor("LIVE TELEMETRY"))
-        Thread.sleep(1_500)
+        openDashboardAndResetScroll()
         screenshot("11-dashboard-light")
         click("Settings")
         scrollToBeginning()
@@ -161,6 +201,7 @@ class CarStalkerUiTest {
 
         // Connected screen: open dashboard, back navigation, then disconnect
         click("Dash")
+        openDashboardAndResetScroll()
         click("Live")
         assertTrue("Connected screen did not open", waitFor("Adapter connected", 5_000))
         assertTrue("Open dashboard action missing", waitFor("Open dashboard", 5_000))
@@ -168,12 +209,12 @@ class CarStalkerUiTest {
         assertTrue("Benchmark action missing", waitFor("Run benchmark", 5_000))
         screenshot("12-connected")
         click("Open dashboard")
-        assertTrue("Open dashboard did not return to live data", waitFor("LIVE TELEMETRY", 10_000))
+        openDashboardAndResetScroll()
 
         click("Live")
         assertTrue(waitFor("Adapter connected", 5_000))
         device.pressBack()
-        assertTrue("Back did not return to the dashboard", waitFor("LIVE TELEMETRY", 10_000))
+        openDashboardAndResetScroll()
 
         click("Live")
         assertTrue(waitFor("Adapter connected", 5_000))
@@ -198,10 +239,19 @@ class CarStalkerUiTest {
     }
 
     private fun click(text: String, timeout: Long = 10_000) {
-        val target = device.wait(Until.findObject(By.text(text)), timeout)
-            ?: error("UI element not found: $text")
-        target.click()
-        device.waitForIdle(1_000)
+        repeat(3) {
+            val target = device.wait(Until.findObject(By.text(text)), timeout)
+                ?: error("UI element not found: $text")
+            try {
+                target.click()
+                device.waitForIdle(1_000)
+                return
+            } catch (_: androidx.test.uiautomator.StaleObjectException) {
+                // Compose replaced the node between lookup and click; resolve it again.
+                device.waitForIdle(300)
+            }
+        }
+        error("UI element kept going stale: $text")
     }
 
     private fun clickLast(text: String, timeout: Long = 10_000) {
@@ -213,10 +263,18 @@ class CarStalkerUiTest {
     }
 
     private fun clickDesc(description: String, timeout: Long = 10_000) {
-        val target = device.wait(Until.findObject(By.desc(description)), timeout)
-            ?: error("UI element not found by description: $description")
-        target.click()
-        device.waitForIdle(1_000)
+        repeat(3) {
+            val target = device.wait(Until.findObject(By.desc(description)), timeout)
+                ?: error("UI element not found by description: $description")
+            try {
+                target.click()
+                device.waitForIdle(1_000)
+                return
+            } catch (_: androidx.test.uiautomator.StaleObjectException) {
+                device.waitForIdle(300)
+            }
+        }
+        error("UI element kept going stale: $description")
     }
 
     private fun waitFor(text: String, timeout: Long = 10_000): Boolean =
@@ -224,6 +282,21 @@ class CarStalkerUiTest {
 
     private fun waitForContains(text: String, timeout: Long = 10_000): Boolean =
         device.wait(Until.hasObject(By.textContains(text)), timeout)
+
+    /**
+     * Waits for the dashboard, lets its automatic first-block scroll finish, then returns to
+     * the top so header actions and the status pill are reachable.
+     */
+    private fun openDashboardAndResetScroll() {
+        if (!waitFor("Dashboard", 20_000)) {
+            // The demo pane may still have been animating when Start demo was tapped.
+            device.wait(Until.findObject(By.text("Start demo")), 2_000)?.click()
+            device.waitForIdle(1_000)
+        }
+        assertTrue("Dashboard did not appear", waitFor("Dashboard", 20_000))
+        Thread.sleep(1_500)
+        scrollToBeginning()
+    }
 
     private fun clickScrolling(text: String) {
         if (!device.hasObject(By.text(text))) scrollTo(text)

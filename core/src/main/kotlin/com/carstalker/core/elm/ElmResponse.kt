@@ -225,7 +225,13 @@ object ElmResponseParser {
 
         // Three-byte header used by ISO 9141-2, KWP and J1850, e.g. "48 6B 10 41 0C 1A F8".
         // These buses have no ISO-TP length byte, so the payload starts right after the header.
-        if (values.size >= 5 && values[0] in ISO_HEADER_FORMATS && values[3] in 0x40..0x4A) {
+        // The second byte is the target address (0x6A/0x6B) and the third is the source ECU
+        // address. Requiring both keeps a headerless line such as "49 02 02 4A 48 4D ..."
+        // (Mode 09 frame counter, VIN starts with "J") or "41 00 80 48 00 00" (Mode 01 bitmap)
+        // from being mistaken for a header.
+        if (values.size >= 5 && values[0] in ISO_HEADER_FORMATS &&
+            values[1] in 0x6A..0x6B && values[2] >= 0x10 && values[3] in 0x40..0x4A
+        ) {
             val header = (values[0] shl 16) or (values[1] shl 8) or values[2]
             return ParsedLine(header, values.copyOfRange(3, values.size), hadHeader = true)
         }

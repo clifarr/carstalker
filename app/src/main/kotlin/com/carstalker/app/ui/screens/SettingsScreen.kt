@@ -115,38 +115,56 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
 
         SettingsSection("Live data") {
             Column {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+                var advancedPolling by remember { mutableStateOf(settings.pollIntervalMs > 0) }
+                SwitchRow(
+                    title = "Automatic polling",
+                    description = "The adapter decides the fastest safe rate. Recommended.",
+                    checked = settings.pollIntervalMs == 0,
+                    onCheckedChange = { automatic ->
+                        advancedPolling = !automatic
+                        viewModel.setPollInterval(if (automatic) 0 else 100)
+                    },
+                )
+                if (!advancedPolling && settings.pollIntervalMs == 0) {
                     Text(
-                        "Minimum gap between polls",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        "Fast values such as RPM are requested more often than slow values such as coolant.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = stalker.muted,
+                    )
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Minimum gap between polls",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            if (settings.pollIntervalMs == 0) "as fast as possible" else "${settings.pollIntervalMs} ms",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = stalker.accent,
+                        )
+                    }
+                    Slider(
+                        value = settings.pollIntervalMs.toFloat(),
+                        onValueChange = { viewModel.setPollInterval(it.roundToInt()) },
+                        valueRange = 0f..1000f,
+                        steps = 19,
+                        colors = SliderDefaults.colors(
+                            thumbColor = stalker.accent,
+                            activeTrackColor = stalker.accent,
+                            inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        ),
                     )
                     Text(
-                        if (settings.pollIntervalMs == 0) "as fast as possible" else "${settings.pollIntervalMs} ms",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = stalker.accent,
+                        "0 polls as fast as the adapter allows. The adapter handles one command at a time, so fast values like RPM are polled more often than slow ones like coolant.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = stalker.muted,
                     )
                 }
-                Slider(
-                    value = settings.pollIntervalMs.toFloat(),
-                    onValueChange = { viewModel.setPollInterval(it.roundToInt()) },
-                    valueRange = 0f..1000f,
-                    steps = 19,
-                    colors = SliderDefaults.colors(
-                        thumbColor = stalker.accent,
-                        activeTrackColor = stalker.accent,
-                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
-                    ),
-                )
-                Text(
-                    "0 polls as fast as the adapter allows. The adapter handles one command at a time, so fast values like RPM are polled more often than slow ones like coolant.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = stalker.muted,
-                )
             }
             SwitchRow(
                 title = "Keep screen on",
@@ -154,29 +172,72 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 checked = settings.keepScreenOn,
                 onCheckedChange = viewModel::setKeepScreenOn,
             )
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Dashboard parameters",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
+        }
+
+        SettingsSection("Dashboards") {
+            Text(
+                "Create a dashboard with only the values you need. Only the values on the active dashboard are polled, so a single-value dashboard updates much faster than a full screen.",
+                style = MaterialTheme.typography.bodySmall,
+                color = stalker.muted,
+            )
+            settings.dashboards.forEach { dashboard ->
+                val active = dashboard.id == settings.activeDashboardId
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(
+                        selected = active,
+                        onClick = { viewModel.selectDashboard(dashboard.id) },
+                        colors = androidx.compose.material3.RadioButtonDefaults.colors(
+                            selectedColor = stalker.accent,
+                            unselectedColor = stalker.muted,
+                        ),
                     )
-                    Text(
-                        if (settings.dashboardAuto) {
-                            "Automatic · up to 10 for this car"
-                        } else {
-                            "${settings.dashboardPids.size} pinned"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = stalker.muted,
-                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            dashboard.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            buildString {
+                                append(
+                                    when {
+                                        dashboard.automatic -> "Automatic selection"
+                                        dashboard.pids.isEmpty() -> "Blank"
+                                        dashboard.pids.size == 1 -> "1 value"
+                                        else -> "${dashboard.pids.size} values"
+                                    },
+                                )
+                                append(if (dashboard.showGauges) " · gauges" else " · no gauges")
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = stalker.muted,
+                        )
+                    }
+                    if (active) {
+                        OutlinedButton(onClick = viewModel::openPidPicker) { Text("Edit") }
+                    }
                 }
-                OutlinedButton(onClick = viewModel::openPidPicker) { Text("Manage") }
             }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = viewModel::createBlankDashboard, modifier = Modifier.fillMaxWidth()) {
+                Text("New blank dashboard")
+            }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { viewModel.duplicateDashboard(settings.activeDashboardId) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Duplicate active dashboard")
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Advanced: custom PIDs can be added to any dashboard from the parameter picker.",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.muted,
+            )
         }
 
         SettingsSection("Custom PIDs") {
@@ -286,8 +347,38 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 onClick = { showPrivacy = true },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Privacy policy") }
+            SwitchRow(
+                title = "Include full VIN in reports",
+                description = "Off by default. When off, exported PDF reports mask the VIN except its last four characters.",
+                checked = settings.includeVinInReports,
+                onCheckedChange = viewModel::setIncludeVinInReports,
+            )
+            OutlinedButton(
+                onClick = viewModel::exportConnectionDiagnostics,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Export connection diagnostics") }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker") },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Source code") }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker/issues/new") },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Report an issue") }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker/releases") },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Releases") }
             Text(
-                "CarStalker is open source under the MIT license.",
+                "Glossary: OBD adapter = the ELM327 dongle; DTC = diagnostic trouble code; PID = parameter identifier; Mode 06 = the ECU's own monitor self-tests; readiness = whether those monitors have completed.",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.muted,
+            )
+            Text(
+                "CarStalker is open source under the MIT license. Diagnostics export is local and contains no VIN or location.",
                 style = MaterialTheme.typography.bodySmall,
                 color = stalker.muted,
             )
@@ -417,7 +508,15 @@ private fun CustomPidDialog(
     val pidValue = pidHex.toIntOrNull(16)
     val pidValid = pidValue != null && pidValue in 1..255
     val formulaValid = formula.isNotBlank() && FormulaParser.isValid(formula)
-    val canSave = name.isNotBlank() && pidValid && formulaValid
+    val minValue = min.toDoubleOrNull()
+    val maxValue = max.toDoubleOrNull()
+    val rangeValid = minValue != null && maxValue != null && maxValue > minValue
+    val decimalsValid = (decimals.toIntOrNull() ?: -1) in 0..3
+    val unitValid = unit.length <= 12
+    val collision = pidValue != null && pidValue in 1..255 &&
+        com.carstalker.core.obd.PidCatalog.find(pidValue) != null &&
+        initial?.pidHex?.toIntOrNull(16) != pidValue
+    val canSave = name.isNotBlank() && pidValid && formulaValid && rangeValid && decimalsValid && unitValid && !collision
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -429,16 +528,21 @@ private fun CustomPidDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                Text(
+                    "Mode 01 custom PID only. A, B, C and D are the first four response bytes. Extended or header-specific requests are not supported.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { name = it.take(40) },
                     label = { Text("Name") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = shortName,
-                    onValueChange = { shortName = it },
+                    onValueChange = { shortName = it.take(12) },
                     label = { Text("Short name (tile)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -450,27 +554,32 @@ private fun CustomPidDialog(
                     },
                     label = { Text("PID (hex)") },
                     singleLine = true,
-                    isError = pidHex.isNotEmpty() && !pidValid,
-                    supportingText = { if (pidHex.isNotEmpty() && !pidValid) Text("Enter 01–FF") },
+                    isError = (pidHex.isNotEmpty() && !pidValid) || collision,
+                    supportingText = {
+                        when {
+                            pidHex.isNotEmpty() && !pidValid -> Text("Enter 01–FF")
+                            collision -> Text("This PID is already defined by a standard parameter")
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = unit,
-                    onValueChange = { unit = it },
+                    onValueChange = { unit = it.take(12) },
                     label = { Text("Unit") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
                     value = formula,
-                    onValueChange = { formula = it },
+                    onValueChange = { formula = it.take(80) },
                     label = { Text("Formula") },
                     singleLine = true,
                     isError = formula.isNotEmpty() && !formulaValid,
                     supportingText = {
                         Text(
                             if (formula.isNotEmpty() && !formulaValid) {
-                                "Use A, B, C, D, numbers and + - * / ( )"
+                                "Use A, B, C, D, numbers, + - * / % and parentheses. Division by zero or a non-finite result is rejected."
                             } else {
                                 "Example: (A*256+B)/4"
                             },
@@ -485,6 +594,7 @@ private fun CustomPidDialog(
                         label = { Text("Min") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        isError = min.isNotBlank() && minValue == null,
                         modifier = Modifier.weight(1f),
                     )
                     OutlinedTextField(
@@ -493,6 +603,7 @@ private fun CustomPidDialog(
                         label = { Text("Max") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        isError = max.isNotBlank() && (maxValue == null || !rangeValid),
                         modifier = Modifier.weight(1f),
                     )
                     OutlinedTextField(
@@ -501,8 +612,18 @@ private fun CustomPidDialog(
                         label = { Text("Dec") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        isError = decimals.isNotBlank() && !decimalsValid,
                         modifier = Modifier.width(74.dp),
                     )
+                }
+                if (!rangeValid && min.isNotBlank() && max.isNotBlank()) {
+                    Text("Max must be greater than min.", style = MaterialTheme.typography.labelSmall, color = stalker.danger)
+                }
+                if (!decimalsValid && decimals.isNotBlank()) {
+                    Text("Decimals must be 0–3.", style = MaterialTheme.typography.labelSmall, color = stalker.danger)
+                }
+                if (!unitValid) {
+                    Text("Unit must be 12 characters or fewer.", style = MaterialTheme.typography.labelSmall, color = stalker.danger)
                 }
             }
         },
