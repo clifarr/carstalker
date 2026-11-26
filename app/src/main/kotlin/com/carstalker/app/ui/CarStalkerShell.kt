@@ -36,6 +36,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carstalker.app.data.MAX_DASHBOARD_PIDS
+import com.carstalker.app.data.calibratedPedalPids
+import com.carstalker.app.data.otherSupportedPids
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.transport.demo.DemoScenario
 import com.carstalker.app.ui.components.PedalChannelCheckDialog
@@ -136,6 +138,13 @@ fun CarStalkerShell(
                 debugActionDone = true
                 viewModel.setTheme(com.carstalker.app.data.ThemeMode.DARK)
             }
+            "disconnect" -> if (connection is ConnectionState.Ready ||
+                connection is ConnectionState.Error ||
+                connection is ConnectionState.Connecting
+            ) {
+                debugActionDone = true
+                viewModel.disconnect()
+            }
             "clear_codes" -> if (connection is ConnectionState.Ready) {
                 debugActionDone = true
                 viewModel.clearCodes()
@@ -175,8 +184,13 @@ fun CarStalkerShell(
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
-                viewModel.pauseGuidedTestForBackground()
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_STOP ->
+                    viewModel.pauseGuidedTestForBackground()
+                // The user may have just changed a battery setting; re-read it on return.
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME ->
+                    viewModel.refreshBackgroundPolicy()
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -278,16 +292,19 @@ fun CarStalkerShell(
         PidPickerSheet(
             pinned = pinnedPids,
             supported = supported,
+            otherSupported = otherSupportedPids(supported, settings.customPids),
             automatic = settings.activeDashboard.automatic,
             dashboardName = settings.activeDashboard.name,
             maxPids = MAX_DASHBOARD_PIDS,
             customPids = settings.customPids.filter { it.enabled },
+            calibratedPids = settings.calibratedPedalPids(),
             onToggle = viewModel::toggleDashboardPid,
             onUseRecommended = viewModel::useRecommendedDashboard,
             onFindPedalChannels = {
                 viewModel.closePidPicker()
                 showPedalCheck = true
             },
+            onAddCustomPid = viewModel::addCustomPid,
             onDismiss = viewModel::closePidPicker,
         )
     }

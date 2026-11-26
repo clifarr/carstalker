@@ -482,6 +482,7 @@ class GuidedDiagnosticsTest {
             runner.sample(Signals.COOLANT, 90.0, time)
             runner.sample(Signals.STFT_B1, 2.0, time)
             runner.sample(Signals.LTFT_B1, 3.0, time)
+            runner.sample(Signals.ADAPTER_VOLTAGE, 13.8, time)
             runner.tick(time)
             time += step
         }
@@ -513,6 +514,7 @@ class GuidedDiagnosticsTest {
             runner.sample(Signals.COOLANT, 90.0, time)
             runner.sample(Signals.STFT_B1, 2.0, time)
             runner.sample(Signals.LTFT_B1, 3.0, time)
+            runner.sample(Signals.ADAPTER_VOLTAGE, 13.8, time)
             runner.tick(time)
             time += 1_000
         }
@@ -587,6 +589,7 @@ class GuidedDiagnosticsTest {
         while (time <= 10_000) {
             runner.sample(Signals.RPM, 900.0, time)
             runner.sample(Signals.COOLANT, 90.0, time)
+            runner.sample(Signals.ADAPTER_VOLTAGE, 13.8, time)
             runner.tick(time)
             time += 1_000
         }
@@ -595,6 +598,7 @@ class GuidedDiagnosticsTest {
         while (time <= 80_000) {
             runner.sample(Signals.RPM, 900.0, time)
             runner.sample(Signals.COOLANT, 90.0, time)
+            runner.sample(Signals.ADAPTER_VOLTAGE, 13.8, time)
             runner.tick(time)
             time += 1_000
         }
@@ -685,6 +689,7 @@ class GuidedDiagnosticsTest {
             runner.sample(Signals.STFT_B1, trim / 2.0, time)
             runner.sample(Signals.LTFT_B1, trim / 2.0, time)
             runner.sample(Signals.SPEED, 0.0, time)
+            runner.sample(Signals.ADAPTER_VOLTAGE, 13.8, time)
             runner.tick(time)
         }
 

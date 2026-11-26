@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
@@ -47,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -57,6 +60,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -78,6 +82,8 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -91,16 +97,21 @@ import com.carstalker.app.data.toPid
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.service.freshnessAt
 import com.carstalker.app.ui.CarStalkerViewModel
+import com.carstalker.app.ui.components.FollowAppThemeInDialogWindow
 import com.carstalker.app.ui.components.MiniStat
 import com.carstalker.app.ui.components.RadialGauge
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.Sparkline
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.components.StatTile
+import com.carstalker.app.ui.components.stalkerSwitchColors
 import com.carstalker.app.ui.components.StatusPill
 import com.carstalker.app.data.LiveKeys
+import com.carstalker.app.data.PedalCalibration
 import com.carstalker.app.data.dashboardParam
+import com.carstalker.app.data.hasPedalCalibration
 import com.carstalker.app.data.isSampleStale
+import com.carstalker.app.data.otherSupportedPids
 import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.formatValue
 import com.carstalker.app.ui.theme.Amber
@@ -133,10 +144,14 @@ fun DashboardScreen(
     val identity by viewModel.identity.collectAsStateWithLifecycle()
     val supported by viewModel.supportedPids.collectAsStateWithLifecycle()
     val recording by viewModel.recording.collectAsStateWithLifecycle()
+    val recordingIssue by viewModel.recordingIssue.collectAsStateWithLifecycle()
+    val recordingStall by viewModel.recordingStall.collectAsStateWithLifecycle()
+    val batteryExempt by viewModel.batteryOptimizationExempt.collectAsStateWithLifecycle()
     val stalker = LocalStalkerColors.current
 
     var detailPid by remember { mutableStateOf<Pid?>(null) }
     var showDashboards by remember { mutableStateOf(false) }
+    var batteryHintDismissed by rememberSaveable { mutableStateOf(false) }
     val dashboard = settings.activeDashboard
     val vehicleName = settings.vehicleProfiles[settings.profileVehicleKey]
         ?.nickname
@@ -368,6 +383,132 @@ fun DashboardScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = stalker.muted,
                 )
+            }
+        }
+
+        recordingStall?.let { stall ->
+            Spacer(Modifier.height(10.dp))
+            StalkerCard(accent = stalker.warning) {
+                Column {
+                    Text(
+                        "Sampling paused for ${stallDuration(stall.longestMs)}",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = stalker.warning,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (stall.count > 1) {
+                            "Android stopped CarStalker ${stall.count} times while it was in the " +
+                                "background (${stallDuration(stall.totalMs)} in total), so those " +
+                                "samples are missing from this recording. Set battery saver to " +
+                                "No restrictions to prevent it."
+                        } else {
+                            "Android stopped CarStalker while it was in the background, so no " +
+                                "samples were written for ${stallDuration(stall.longestMs)}. " +
+                                "Set battery saver to No restrictions to prevent it."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row {
+                        TextButton(
+                            onClick = viewModel::openAppBatterySettings,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        ) {
+                            Text(
+                                "Battery settings",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = stalker.accent,
+                            )
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        TextButton(
+                            onClick = viewModel::clearRecordingStall,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        ) {
+                            Text("Dismiss", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (recording && !batteryExempt && !batteryHintDismissed) {
+            Spacer(Modifier.height(10.dp))
+            StalkerCard(accent = stalker.accent) {
+                Column {
+                    Text(
+                        "Keep recording in the background",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (viewModel.xiaomiDevice) {
+                            "Xiaomi and HyperOS freeze apps that are not exempt from battery " +
+                                "saving once the screen is off. Set Battery saver to " +
+                                "No restrictions and allow Autostart, or samples stop while the " +
+                                "app is in the background."
+                        } else {
+                            "Android can freeze CarStalker in the background to save power, " +
+                                "which leaves gaps in the recording. Allow the app to run " +
+                                "without battery restrictions."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row {
+                        TextButton(
+                            onClick = viewModel::openAppBatterySettings,
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        ) {
+                            Text(
+                                "Battery settings",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = stalker.accent,
+                            )
+                        }
+                        if (viewModel.xiaomiDevice) {
+                            Spacer(Modifier.width(16.dp))
+                            TextButton(
+                                onClick = viewModel::openAutostartSettings,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                            ) {
+                                Text(
+                                    "Autostart",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = stalker.accent,
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(16.dp))
+                        TextButton(
+                            onClick = { batteryHintDismissed = true },
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        ) {
+                            Text("Not now", style = MaterialTheme.typography.labelMedium, color = stalker.muted)
+                        }
+                    }
+                }
+            }
+        }
+
+        recordingIssue?.let { issue ->
+            Spacer(Modifier.height(10.dp))
+            StalkerCard(accent = stalker.warning) {
+                Column {
+                    Text(
+                        "Recording problem",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = stalker.warning,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(issue, style = MaterialTheme.typography.bodySmall)
+                    TextButton(
+                        onClick = viewModel::clearRecordingIssue,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    ) {
+                        Text("Dismiss", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
+                    }
+                }
             }
         }
 
@@ -744,6 +885,7 @@ fun DashboardScreen(
             adapter = ready?.adapter?.identifier,
             voltage = live.adapterVoltage ?: ready?.adapter?.voltage,
             supportedCount = supported.size,
+            otherSupportedCount = otherSupportedPids(supported, settings.customPids).size,
         )
         Spacer(Modifier.height(24.dp))
     }
@@ -787,6 +929,7 @@ fun DashboardScreen(
             onRename = viewModel::renameDashboard,
             onDelete = viewModel::deleteDashboard,
             onToggleGauges = viewModel::setDashboardGauges,
+            onTogglePedalInterpolation = viewModel::setDashboardPedalInterpolation,
             onManageParameters = {
                 viewModel.openPidPicker()
                 showDashboards = false
@@ -807,13 +950,15 @@ fun DashboardScreen(
             pid = pid,
             samples = history[pid.id].orEmpty(),
             unitSystem = settings.unitSystem,
-            isPinned = dashboardPids.any { it.id == pid.id },
             lastUpdatedAt = detailLastAt,
             statusLabel = liveLabel,
             statusOk = dataLive,
             vehicleOffline = vehicleOffline,
             adapterOffline = connection !is ConnectionState.Ready,
-            onTogglePin = { viewModel.toggleDashboardPid(pid.id) },
+            pedalCalibration = settings.pedalCalibrations.firstOrNull {
+                it.pidId == pid.id && it.vehicleKey == settings.profileVehicleKey
+            },
+            pedalInterpolation = dashboard.pedalInterpolation,
             onDismiss = { detailPid = null },
         )
     }
@@ -880,6 +1025,7 @@ private fun VehicleCard(
     adapter: String?,
     voltage: Double?,
     supportedCount: Int,
+    otherSupportedCount: Int,
 ) {
     val stalker = LocalStalkerColors.current
     val clipboard = LocalClipboardManager.current
@@ -954,6 +1100,14 @@ private fun VehicleCard(
                 adapter?.let { InfoLine("Adapter", it) }
                 voltage?.let { InfoLine("Adapter voltage", String.format(Locale.US, "%.1f V", it)) }
                 InfoLine("Supported PIDs", supportedCount.toString())
+                if (otherSupportedCount > 0) {
+                    InfoLine("Without a definition", otherSupportedCount.toString())
+                    Text(
+                        "The parameter picker lists these; tap one there to add it as a custom PID.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = stalker.muted,
+                    )
+                }
             }
         }
     }
@@ -986,13 +1140,13 @@ private fun PidDetailSheet(
     pid: Pid,
     samples: List<Float>,
     unitSystem: UnitSystem,
-    isPinned: Boolean,
     lastUpdatedAt: Long,
     statusLabel: String,
     statusOk: Boolean,
     vehicleOffline: Boolean,
     adapterOffline: Boolean,
-    onTogglePin: () -> Unit,
+    pedalCalibration: PedalCalibration? = null,
+    pedalInterpolation: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
@@ -1029,13 +1183,35 @@ private fun PidDetailSheet(
                 "channels in the parameter picker before diagnosing a sensor."
         else -> null
     }
+    val pedalNote = when (pid.id) {
+        0x49, 0x4A -> if (pedalCalibration != null) {
+            "Calibrated for this car: ${pedalCalibration.releasedValue.toInt()}–" +
+                "${pedalCalibration.pressedValue.toInt()} % → 0–100 %. " +
+                if (pedalInterpolation) {
+                    "Interpolation is on for this dashboard."
+                } else {
+                    "Interpolation is off for this dashboard; turn it on in the Dashboards sheet."
+                }
+        } else {
+            "Not calibrated for this car. Run Find my throttle & pedal channels in the parameter " +
+                "picker to rescale a partial-range pedal to 0–100 %."
+        }
+        else -> null
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
+        contentWindowInsets = { WindowInsets(0) },
     ) {
-        Column(Modifier.padding(horizontal = 24.dp).padding(bottom = 28.dp)) {
+        Column(
+            Modifier
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 28.dp)
+                .navigationBarsPadding(),
+        ) {
+            FollowAppThemeInDialogWindow()
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -1121,18 +1297,22 @@ private fun PidDetailSheet(
                     color = stalker.muted,
                 )
             }
-            Spacer(Modifier.height(20.dp))
-            if (!pid.isCustom) {
-                OutlinedButton(onClick = onTogglePin, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (isPinned) "Remove from dashboard" else "Pin to dashboard")
-                }
+            if (pedalNote != null) {
                 Spacer(Modifier.height(8.dp))
-            } else {
+                Text(
+                    pedalNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.muted,
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            if (pid.isCustom) {
                 Text(
                     "Custom PID — manage it in Settings.",
                     style = MaterialTheme.typography.bodySmall,
                     color = stalker.muted,
                 )
+                Spacer(Modifier.height(8.dp))
             }
             Button(
                 onClick = onDismiss,
@@ -1167,6 +1347,16 @@ private fun accentFor(pid: Pid): Color = when (pid.category) {
     Pid.Category.ELECTRICAL -> Ice
     Pid.Category.EMISSIONS -> Mint
     Pid.Category.OTHER -> Ice
+}
+
+/** A sampling gap is short; "12 s" reads better than "0m 12s" in a banner. */
+private fun stallDuration(ms: Long): String {
+    val seconds = (ms / 1000).coerceAtLeast(1)
+    return when {
+        seconds < 60 -> "${seconds}s"
+        seconds < 3600 -> "${seconds / 60}m ${seconds % 60}s"
+        else -> "${seconds / 3600}h ${(seconds % 3600) / 60}m"
+    }
 }
 
 
@@ -1275,19 +1465,28 @@ private fun DashboardSwitcherSheet(
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onToggleGauges: (String, Boolean) -> Unit,
+    onTogglePedalInterpolation: (String, Boolean) -> Unit,
     onManageParameters: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
     var renameTarget by remember { mutableStateOf<String?>(null) }
     var renameText by remember { mutableStateOf("") }
+    val pedalCalibrated = settings.hasPedalCalibration()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
+        contentWindowInsets = { WindowInsets(0) },
     ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .navigationBarsPadding(),
+        ) {
+            FollowAppThemeInDialogWindow()
             Text(
                 "Dashboards",
                 style = MaterialTheme.typography.headlineSmall,
@@ -1298,6 +1497,14 @@ private fun DashboardSwitcherSheet(
                 style = MaterialTheme.typography.bodySmall,
                 color = stalker.muted,
             )
+            if (!pedalCalibrated) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Pedal interpolation is unavailable until you run the pedal finder for this car. Open the parameter picker and choose Find my throttle & pedal channels.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = stalker.warning,
+                )
+            }
             Spacer(Modifier.height(12.dp))
             settings.dashboards.forEach { dashboard ->
                 val active = dashboard.id == settings.activeDashboardId
@@ -1367,6 +1574,34 @@ private fun DashboardSwitcherSheet(
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp),
                                 ) { Text("Delete", color = stalker.danger) }
                             }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Pedal interpolation",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    if (pedalCalibrated) {
+                                        "Show the calibrated pedal or throttle channel as 0–100 %."
+                                    } else {
+                                        "Run the pedal finder to enable this."
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (pedalCalibrated) stalker.muted else stalker.warning,
+                                )
+                            }
+                            Switch(
+                                checked = pedalCalibrated && dashboard.pedalInterpolation,
+                                onCheckedChange = { onTogglePedalInterpolation(dashboard.id, it) },
+                                enabled = pedalCalibrated,
+                                colors = stalkerSwitchColors(),
+                                modifier = Modifier.semantics {
+                                    contentDescription = "Pedal interpolation for ${dashboard.name}"
+                                },
+                            )
                         }
                     }
                 }
@@ -1514,8 +1749,15 @@ private fun ReplaceParamSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
+        contentWindowInsets = { WindowInsets(0) },
     ) {
-        Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+        Column(
+            Modifier
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp)
+                .navigationBarsPadding(),
+        ) {
+            FollowAppThemeInDialogWindow()
             Text(
                 "Replace ${target.shortName}",
                 style = MaterialTheme.typography.headlineSmall,

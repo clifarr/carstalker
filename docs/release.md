@@ -10,8 +10,12 @@
 
 ```bash
 ./gradlew :core:test :app:testDebugUnitTest :app:lintRelease
-./gradlew :app:assembleRelease
+./gradlew :app:assembleRelease :app:bundleRelease
+# With an emulator or device attached:
+./gradlew :app:connectedDebugAndroidTest
 ```
+
+- CI also runs the instrumented smoke tests on an API 35 emulator for every push and pull request.
 
 - Install the release APK on a device or emulator.
 - Test demo mode and, if possible, a real adapter.
@@ -22,7 +26,7 @@
 
 ## GitHub Actions secrets
 
-The release workflow signs the APK with the upload key. Add these repository secrets under **Settings → Secrets and variables → Actions**:
+The release workflow signs the APK and AAB with the upload key. Add these repository secrets under **Settings → Secrets and variables → Actions**:
 
 | Secret | Value |
 | --- | --- |
@@ -50,7 +54,7 @@ gh workflow enable "Release APK" --repo clifarr/carstalker
    git push origin v0.3.0-beta1
    ```
 
-2. The **Release APK** workflow runs tests and lint, builds the signed APK, generates `SHA256SUMS`, and creates a GitHub Release with both files.
+2. The **Release APK** workflow runs tests and lint, builds the signed APK and AAB, generates `SHA256SUMS`, and creates a GitHub Release with all three files.
 3. Verify the release locally:
 
    ```bash
@@ -63,6 +67,7 @@ gh workflow enable "Release APK" --repo clifarr/carstalker
 ## Play Store later
 
 - Upload `app/build/outputs/bundle/release/app-release.aab` to Play Console.
+- Use <https://clifarr.github.io/carstalker/privacy-policy.html> as the privacy policy URL.
 - Complete the app content forms using [store-listing.md](store-listing.md).
 - Start with internal and closed testing. If the account is a new personal account created after 13 November 2023, keep at least 12 testers opted in for 14 continuous days before applying for production access.
 - Use a staged rollout: 5% → 20% → 50% → 100%.

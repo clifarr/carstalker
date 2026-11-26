@@ -38,7 +38,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,12 +50,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.carstalker.app.data.AppSettings
+import com.carstalker.app.data.dashboardParam
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.service.toScanContext
 import com.carstalker.app.ui.CarStalkerViewModel
 import com.carstalker.app.ui.components.ActionRow
 import com.carstalker.app.ui.components.AvailabilityPill
-import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.components.StatusPill
 import com.carstalker.app.ui.theme.LocalStalkerColors
@@ -77,12 +77,14 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val report by viewModel.dtcReport.collectAsStateWithLifecycle()
     val capabilities by viewModel.vehicleCapabilities.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
     val activeGuide by viewModel.activeGuide.collectAsStateWithLifecycle()
     val stalker = LocalStalkerColors.current
     var showPlanned by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(CatalogueFilter.ALL) }
     var expanded by remember { mutableStateOf(setOf(DiagnosticCategory.ENGINE_FUEL.name)) }
+    var suggestedExpanded by remember { mutableStateOf(true) }
     val connected = connection is ConnectionState.Ready
 
     val guide = activeGuide
@@ -157,7 +159,7 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
 
         if (connected) {
             Spacer(Modifier.height(18.dp))
-            EngineProfileCard(capabilities = capabilities, viewModel = viewModel)
+            EngineProfileCard(capabilities = capabilities, settings = settings, viewModel = viewModel)
             Spacer(Modifier.height(14.dp))
             CurrentCodesCard(report = report, onReadCodes = viewModel::readCodes)
         }
@@ -182,24 +184,6 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
             }
         }
 
-        if (suggested.isNotEmpty() && connected) {
-            SectionHeader("Suggested from this scan")
-            Spacer(Modifier.height(8.dp))
-            suggested.take(3).forEach { definition ->
-                val availability = CapabilityResolver.resolve(definition, capabilities, scan)
-                GuideCard(
-                    definition = definition,
-                    availability = availability,
-                    connected = true,
-                    matchedCode = codes.firstOrNull { definition.matchesCode(it) },
-                    scanReadAt = report.readAt,
-                    onOpen = { viewModel.openGuide(definition) },
-                )
-                Spacer(Modifier.height(10.dp))
-            }
-            Spacer(Modifier.height(10.dp))
-        }
-
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -208,7 +192,7 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
             leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             modifier = Modifier.fillMaxWidth(),
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         Row(
             Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -241,35 +225,46 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
             }
         }
 
+        if (connected && suggested.isNotEmpty() && query.isBlank() && filter == CatalogueFilter.ALL) {
+            Spacer(Modifier.height(14.dp))
+            AccordionHeader(
+                title = "Suggested from this scan",
+                count = suggested.size,
+                expanded = suggestedExpanded,
+                onToggle = { suggestedExpanded = !suggestedExpanded },
+            )
+            if (suggestedExpanded) {
+                Spacer(Modifier.height(8.dp))
+                suggested.forEach { definition ->
+                    val availability = CapabilityResolver.resolve(definition, capabilities, scan)
+                    GuideCard(
+                        definition = definition,
+                        availability = availability,
+                        connected = true,
+                        matchedCode = codes.firstOrNull { definition.matchesCode(it) },
+                        scanReadAt = report.readAt,
+                        onOpen = { viewModel.openGuide(definition) },
+                    )
+                    Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+
         DiagnosticCategory.entries.forEach { category ->
             val categoryGuides = visible.filter { it.category == category }
             if (categoryGuides.isEmpty()) return@forEach
             val isExpanded = query.isNotBlank() || category.name in expanded
-            Spacer(Modifier.height(10.dp))
-            Surface(
-                onClick = {
+            Spacer(Modifier.height(14.dp))
+            AccordionHeader(
+                title = category.label,
+                count = categoryGuides.size,
+                expanded = isExpanded,
+                onToggle = {
                     expanded = if (category.name in expanded) expanded - category.name else expanded + category.name
                 },
-                shape = RoundedCornerShape(12.dp),
-                color = Color.Transparent,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${if (isExpanded) "▾" else "▸"} ${category.label} · ${categoryGuides.size}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = stalker.accent,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        if (isExpanded) "Hide" else "Show",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = stalker.muted,
-                    )
-                }
-            }
+            )
             if (isExpanded) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 categoryGuides.forEach { definition ->
                     val availability = CapabilityResolver.resolve(definition, capabilities, scan)
                     GuideCard(
@@ -280,27 +275,28 @@ fun DiagnoseScreen(viewModel: CarStalkerViewModel, onOpenConnect: () -> Unit) {
                         scanReadAt = report.readAt,
                         onOpen = { viewModel.openGuide(definition) },
                     )
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                 }
             }
         }
 
         val planned = DiagnosticRegistry.planned()
         if (planned.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                SectionHeader("Planned workflows", modifier = Modifier.weight(1f))
-                TextButton(onClick = { showPlanned = !showPlanned }) {
-                    Text(if (showPlanned) "Hide" else "Show ${planned.size}")
-                }
-            }
+            Spacer(Modifier.height(14.dp))
+            AccordionHeader(
+                title = "Planned workflows",
+                count = planned.size,
+                expanded = showPlanned,
+                onToggle = { showPlanned = !showPlanned },
+            )
             if (showPlanned) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 planned.forEach { definition ->
                     val availability = CapabilityResolver.resolve(definition, capabilities, scan)
                     PlannedRow(definition, availability)
                 }
             } else {
+                Spacer(Modifier.height(6.dp))
                 Text(
                     "Workflows that still need a reliable data source, trigger or baseline store stay listed here. They never offer Start until they can collect and interpret their minimum signals.",
                     style = MaterialTheme.typography.bodySmall,
@@ -332,20 +328,41 @@ private fun DiagnosticDefinition.matchesQuery(query: String): Boolean {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EngineProfileCard(capabilities: VehicleCapabilities, viewModel: CarStalkerViewModel) {
+private fun EngineProfileCard(
+    capabilities: VehicleCapabilities,
+    settings: AppSettings,
+    viewModel: CarStalkerViewModel,
+) {
     val stalker = LocalStalkerColors.current
     val profile = capabilities.profile
+    val currentKey = settings.profileVehicleKey
+    val entry = settings.vehicleProfiles[currentKey]
+    var vehicleName by remember(currentKey) {
+        mutableStateOf(entry?.nickname.orEmpty())
+    }
     StalkerCard {
         Column {
             Text("Vehicle profile", style = MaterialTheme.typography.titleSmall)
             Spacer(Modifier.height(2.dp))
             Text(
-                "The engine type changes which rules apply. It is never guessed from one live value.",
+                "Per-car settings. They are stored against this car's ECU fingerprint, not shared with another vehicle.",
                 style = MaterialTheme.typography.bodySmall,
                 color = stalker.muted,
             )
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = vehicleName,
+                onValueChange = {
+                    vehicleName = it.take(32)
+                    viewModel.setVehicleNickname(it)
+                },
+                label = { Text("Vehicle name (optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
             Text("Fuel", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
+            Spacer(Modifier.height(8.dp))
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -354,8 +371,9 @@ private fun EngineProfileCard(capabilities: VehicleCapabilities, viewModel: CarS
                     ProfileChip(fuel.label, profile.fuelType == fuel) { viewModel.setFuelType(fuel) }
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(14.dp))
             Text("Aspiration", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
+            Spacer(Modifier.height(8.dp))
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -365,13 +383,41 @@ private fun EngineProfileCard(capabilities: VehicleCapabilities, viewModel: CarS
                 }
             }
             if (profile.fuelType == FuelType.UNKNOWN) {
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     "Set fuel and aspiration for the most precise interpretation.",
                     style = MaterialTheme.typography.labelSmall,
                     color = stalker.warning,
                 )
             }
+            Spacer(Modifier.height(14.dp))
+            Text("Pedal calibration", style = MaterialTheme.typography.labelSmall, color = stalker.accent)
+            Spacer(Modifier.height(6.dp))
+            val calibrated = settings.pedalCalibrations
+                .filter { it.vehicleKey == currentKey }
+            if (calibrated.isEmpty()) {
+                Text(
+                    "No pedal calibration for this car yet. Run Find my throttle & pedal channels from the parameter picker.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+            } else {
+                Text(
+                    "Calibrated channels: " + calibrated.joinToString { calibration ->
+                        val name = dashboardParam(calibration.pidId)?.shortName
+                            ?: calibration.pidId.toString()
+                        "$name (${calibration.releasedValue.toInt()}–${calibration.pressedValue.toInt()} %)"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = stalker.muted,
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Interpolation is enabled per dashboard in the Dashboards sheet.",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.muted,
+            )
         }
     }
 }
@@ -424,14 +470,14 @@ private fun CurrentCodesCard(report: com.carstalker.app.service.DtcReport, onRea
                     Text("Read")
                 }
             }
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(8.dp))
             Text(
                 codes.joinToString().ifBlank { "No stored, pending or permanent codes read yet." },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (codes.isEmpty()) stalker.muted else MaterialTheme.colorScheme.onSurface,
             )
             if (report.readAt > 0) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     buildString {
                         append("Scanned ${timeFormat.format(java.util.Date(report.readAt))}")
@@ -442,7 +488,7 @@ private fun CurrentCodesCard(report: com.carstalker.app.service.DtcReport, onRea
                 )
             }
             if (codes.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     "Guides that match a code are marked Suggested. A code is a starting point, not a diagnosis.",
                     style = MaterialTheme.typography.labelSmall,
@@ -505,6 +551,7 @@ private fun GuideCard(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
+                    Spacer(Modifier.height(2.dp))
                     Text(
                         definition.subtitle,
                         style = MaterialTheme.typography.labelSmall,
@@ -512,7 +559,7 @@ private fun GuideCard(
                     )
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
                 definition.description,
                 style = MaterialTheme.typography.bodySmall,
@@ -520,10 +567,10 @@ private fun GuideCard(
                 maxLines = 4,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 if (connected) {
                     AvailabilityPill(availability.availability)
@@ -536,7 +583,7 @@ private fun GuideCard(
                 }
             }
             if (matchedCode != null && scanReadAt > 0) {
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(10.dp))
                 Text(
                     "Detected in the ${java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(scanReadAt))} scan. A code is a starting point, not a diagnosis.",
                     style = MaterialTheme.typography.labelSmall,
@@ -544,8 +591,9 @@ private fun GuideCard(
                 )
             }
             if (connected && availability.reasons.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
-                availability.reasons.take(3).forEach { reason ->
+                Spacer(Modifier.height(10.dp))
+                availability.reasons.take(3).forEachIndexed { index, reason ->
+                    if (index > 0) Spacer(Modifier.height(2.dp))
                     Text(
                         "• $reason",
                         style = MaterialTheme.typography.labelSmall,
@@ -553,13 +601,13 @@ private fun GuideCard(
                     )
                 }
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             Text(
                 "Needs: " + definition.requiredSignals.joinToString { it.label },
                 style = MaterialTheme.typography.labelSmall,
                 color = stalker.muted,
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             Text(
                 when {
                     !connected -> "View details →"
@@ -568,6 +616,39 @@ private fun GuideCard(
                 },
                 style = MaterialTheme.typography.labelMedium,
                 color = accent,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AccordionHeader(
+    title: String,
+    count: Int,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+) {
+    val stalker = LocalStalkerColors.current
+    Surface(
+        onClick = onToggle,
+        shape = RoundedCornerShape(12.dp),
+        color = Color.Transparent,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${if (expanded) "▾" else "▸"} $title · $count",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.accent,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                if (expanded) "Hide" else "Show",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.muted,
             )
         }
     }
@@ -586,14 +667,17 @@ private fun PlannedRow(definition: DiagnosticDefinition, availability: Availabil
             )
             AvailabilityPill(availability.availability)
         }
+        Spacer(Modifier.height(4.dp))
         Text(
             definition.subtitle,
             style = MaterialTheme.typography.labelSmall,
             color = stalker.muted,
         )
         definition.catalogueNote?.let {
+            Spacer(Modifier.height(4.dp))
             Text(it, style = MaterialTheme.typography.labelSmall, color = stalker.muted)
         }
+        Spacer(Modifier.height(4.dp))
         Text(
             "Needs: " + definition.requiredSignals.joinToString { it.label },
             style = MaterialTheme.typography.labelSmall,

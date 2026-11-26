@@ -22,4 +22,14 @@ object PidSupport {
         }
         return result
     }
+
+    /**
+     * Advertised PIDs that the app has no definition for.
+     *
+     * The bitmaps also set the "next range" markers (0x20, 0x40, ...), which are requests rather
+     * than parameters, so [probeBases] are dropped along with anything outside the Mode 01 range.
+     * [known] is every id the app can already show, including user-defined PIDs.
+     */
+    fun unlisted(supported: Set<Int>, known: Set<Int>): List<Int> =
+        supported.filter { it in 0x01..0xFF && it !in probeBases && it !in known }.sorted()
 }

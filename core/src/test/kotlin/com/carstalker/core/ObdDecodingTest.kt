@@ -62,6 +62,23 @@ class ObdDecodingTest {
     }
 
     @Test
+    fun `unlisted pids drop known ids range markers and non mode 01 values`() {
+        val supported = setOf(0x01, 0x0C, 0x20, 0x40, 0x91, 0x9A, 0x100)
+
+        val unlisted = PidSupport.unlisted(supported, known = setOf(0x01, 0x0C))
+
+        assertEquals(listOf(0x91, 0x9A), unlisted)
+    }
+
+    @Test
+    fun `unlisted pids is empty when every advertised pid is known`() {
+        assertEquals(
+            emptyList<Int>(),
+            PidSupport.unlisted(setOf(0x0C, 0x0D, 0x20), known = setOf(0x0C, 0x0D)),
+        )
+    }
+
+    @Test
     fun `decodes dtc codes`() {
         val codes = DtcDecoder.decode(intArrayOf(0x01, 0x33, 0x03, 0x01, 0x00, 0x00))
         assertEquals(listOf("P0133", "P0301"), codes.map { it.code })

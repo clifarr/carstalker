@@ -294,6 +294,7 @@ class GuidedLaterPhasesTest {
             runner.sample(Signals.RPM, 2_000.0, time)
             runner.sample(Signals.LOAD, 40.0, time)
             runner.sample(Signals.SPEED, 60.0, time)
+            runner.sample(Signals.ADAPTER_VOLTAGE, 13.8, time)
             runner.tick(time)
             if (time == 4_100L) runner.markSymptom(time)
         }

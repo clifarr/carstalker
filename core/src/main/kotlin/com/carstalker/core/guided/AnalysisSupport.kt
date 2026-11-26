@@ -149,7 +149,10 @@ object AnalysisSupport {
         notes: List<String> = emptyList(),
         outcome: StageOutcome = when {
             stage.outcome == StageOutcome.SKIPPED -> StageOutcome.SKIPPED
-            stage.outcome == StageOutcome.INTERRUPTED || !stage.completed -> StageOutcome.INTERRUPTED
+            stage.outcome == StageOutcome.INTERRUPTED -> StageOutcome.INTERRUPTED
+            stage.outcome == StageOutcome.NOT_EXERCISED -> StageOutcome.NOT_EXERCISED
+            stage.outcome == StageOutcome.PARTIAL -> StageOutcome.PARTIAL
+            !stage.completed -> StageOutcome.INTERRUPTED
             valid -> StageOutcome.VALID
             else -> StageOutcome.INSUFFICIENT_QUALITY
         },
@@ -157,7 +160,9 @@ object AnalysisSupport {
     ): StageSummary = StageSummary(
         stageId = stage.stageId,
         title = stage.title,
-        valid = valid,
+        // A partial or interrupted capture is never counted as valid evidence, even when the
+        // analyzer could compute a value from the samples it did receive.
+        valid = valid && outcome == StageOutcome.VALID,
         completed = stage.completed,
         sampleCount = stage.series(keyPid).size,
         durationSeconds = stage.durationMs / 1000.0,
@@ -203,14 +208,23 @@ object AnalysisSupport {
         if (interruptions > 0) notes += "$interruptions stage interruption(s); mixed samples were discarded."
         if (input.adapterVoltageUsed) notes += "Adapter voltage was used instead of control-module voltage."
         if (stimulusObserved == false) notes += "The required stimulus was not observed, so this response was not exercised."
+        if (input.unverifiedSafetySignals.isNotEmpty()) {
+            notes += "Safety limits could not be checked for: ${input.unverifiedSafetySignals.joinToString()}."
+        }
         val notExercised = input.stages.filter { it.outcome == StageOutcome.NOT_EXERCISED }
         if (notExercised.isNotEmpty()) {
             notes += "Not exercised: ${notExercised.joinToString { it.title }}."
+        }
+        val partial = input.stages.filter { it.outcome == StageOutcome.PARTIAL }
+        if (partial.isNotEmpty()) {
+            notes += "Partial captures: ${partial.joinToString { it.title }}."
         }
         val evidence = when {
             missing.isNotEmpty() -> "Incomplete: required signals are missing."
             !adequate -> "Limited: the sampling rate was too low for a confident interpretation."
             stimulusObserved == false -> "Not exercised: the required stimulus was not observed."
+            partial.isNotEmpty() -> "Limited: ${partial.size} stage(s) produced only partial evidence."
+            input.unverifiedSafetySignals.isNotEmpty() -> "Limited: safety limits were not verified for every signal."
             interruptions > 0 -> "Limited: $interruptions interruption(s) discarded mixed samples."
             else -> "Adequate for this test's scope."
         }

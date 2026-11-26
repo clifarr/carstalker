@@ -81,6 +81,7 @@ import com.carstalker.app.ui.components.SignalBars
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.components.StatusPill
 import com.carstalker.app.ui.theme.Carbon
+import com.carstalker.app.data.lastVehicleLabel
 import com.carstalker.app.ui.theme.LocalStalkerColors
 import com.carstalker.app.transport.classic.ClassicDevice
 import com.carstalker.app.transport.ble.DiscoveredDevice
@@ -95,6 +96,9 @@ fun ConnectScreen(
     val connection by viewModel.connection.collectAsStateWithLifecycle()
     val benchmark by viewModel.benchmark.collectAsStateWithLifecycle()
     val connected = connection is ConnectionState.Ready
+    val lastVehicle = settings.lastVehicleLabel()
+    var renameLastVehicle by remember { mutableStateOf(false) }
+    var renameText by remember { mutableStateOf("") }
     val devices by viewModel.bleDevices.collectAsStateWithLifecycle()
     val scanning by viewModel.bleScanning.collectAsStateWithLifecycle()
     val classicDevices by viewModel.classicDevices.collectAsStateWithLifecycle()
@@ -335,7 +339,7 @@ fun ConnectScreen(
                 }
             }
 
-            if (settings.lastVin != null && connection !is ConnectionState.Ready) {
+            if (lastVehicle != null && connection !is ConnectionState.Ready) {
                 Spacer(Modifier.height(18.dp))
                 StalkerCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -347,11 +351,25 @@ fun ConnectScreen(
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                settings.lastVin!!,
+                                lastVehicle.name,
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
+                            lastVehicle.detail?.let { detail ->
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    detail,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stalker.muted,
+                                )
+                            }
                         }
+                        TextButton(
+                            onClick = {
+                                renameText = lastVehicle.name
+                                renameLastVehicle = true
+                            },
+                        ) { Text("Rename", color = stalker.accentSecondary) }
                     }
                 }
             }
@@ -402,6 +420,32 @@ fun ConnectScreen(
                 }
             }
         }
+    }
+
+    if (renameLastVehicle) {
+        AlertDialog(
+            onDismissRequest = { renameLastVehicle = false },
+            title = { Text("Name this car") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it.take(32) },
+                    label = { Text("Vehicle name") },
+                    singleLine = true,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.setVehicleNickname(renameText)
+                        renameLastVehicle = false
+                    },
+                ) { Text("Save", color = stalker.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameLastVehicle = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 

@@ -293,6 +293,8 @@ class DiagnosticTruthTest {
         runner.sample(Signals.RPM, 2_000.0, 100)
         runner.sample(Signals.LOAD, 50.0, 100)
         runner.sample(Signals.SPEED, 60.0, 100)
+        runner.sample(Signals.COOLANT, 90.0, 100)
+        runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, 100)
         runner.tick(100)
         runner.tick(2_500)
         runner.tick(3_000)
@@ -379,5 +381,169 @@ class DiagnosticTruthTest {
         val response = result.stages.first { it.stageId == "throttle_response" }
         assertEquals(StageOutcome.NOT_EXERCISED, response.outcome)
         assertTrue(result.warnings.any { it.contains("not exercised", ignoreCase = true) })
+    }
+
+    // ---- Fresh safety data and capture completeness ----------------------
+
+    private val safetyPids = setOf(Signals.RPM, Signals.COOLANT, Signals.CONTROL_MODULE_VOLTAGE)
+
+    private fun runnerDefinition(
+        stagePids: List<Int> = listOf(Signals.RPM),
+        captureMs: Long = 20_000,
+        settlingMs: Long = 0,
+        allowFinishEarly: Boolean = true,
+    ): DiagnosticDefinition = DiagnosticDefinition(
+        id = "safety_runner",
+        title = "Safety runner",
+        subtitle = "",
+        description = "",
+        phase = DiagnosticPhase.PHASE_1,
+        estimatedMinutes = 1,
+        stages = listOf(
+            StageDefinition(
+                id = "idle",
+                title = "Idle",
+                instruction = "Hold idle",
+                condition = StageCondition(
+                    kind = StageKind.WARM_IDLE,
+                    rpmRange = 550..1_100,
+                    minCoolantC = 70.0,
+                    settlingMs = settlingMs,
+                    captureMs = captureMs,
+                    stabilityToleranceRpm = 0,
+                ),
+                pids = stagePids,
+                allowFinishEarly = allowFinishEarly,
+            ),
+        ),
+    )
+
+    private fun safetyRunner(
+        definition: DiagnosticDefinition = runnerDefinition(),
+        supported: Set<Int> = safetyPids,
+    ) = GuidedTestRunner(
+        definition = definition,
+        capabilities = VehicleCapabilities(
+            supportedPids = supported,
+            profile = VehicleProfile(FuelType.PETROL, Aspiration.NATURALLY_ASPIRATED),
+            adapterVoltageAvailable = true,
+        ),
+        prerequisites = PrerequisiteAnswers(engineWarmConfirmed = true, safeLocationConfirmed = true),
+    )
+
+    @Test
+    fun `stale safety readings pause the stage instead of passing the gate`() {
+        val runner = safetyRunner()
+        runner.start(0)
+        runner.sample(Signals.RPM, 800.0, 100)
+        runner.sample(Signals.COOLANT, 90.0, 100)
+        runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, 100)
+        runner.tick(100)
+        assertEquals(GuidedRunState.CAPTURING, runner.runState)
+
+        // Only analytics keep reporting; the safety channels went stale.
+        runner.sample(Signals.RPM, 800.0, 5_000)
+        runner.tick(5_000)
+
+        assertEquals(GuidedRunState.PAUSED, runner.runState)
+        assertNull(runner.safetyReason)
+        assertEquals(SafetyStatus.UNAVAILABLE, runner.snapshot(5_000).safetyStatus)
+        assertTrue(runner.snapshot(5_000).message.contains("safety", ignoreCase = true))
+        assertTrue(runner.completedCaptures.isEmpty())
+    }
+
+    @Test
+    fun `safety signals are sampled even when the stage does not request them`() {
+        val runner = safetyRunner(
+            definition = runnerDefinition(stagePids = listOf(Signals.LOAD)),
+            supported = safetyPids + Signals.LOAD,
+        )
+
+        val requested = runner.pidsToSample()
+
+        assertTrue(requested.contains(Signals.RPM))
+        assertTrue(requested.contains(Signals.COOLANT))
+        assertTrue(requested.contains(Signals.CONTROL_MODULE_VOLTAGE))
+        assertTrue(requested.contains(Signals.LOAD))
+    }
+
+    @Test
+    fun `a single sample is never a valid stage`() {
+        val runner = safetyRunner()
+        runner.start(0)
+        runner.sample(Signals.RPM, 800.0, 100)
+        runner.sample(Signals.COOLANT, 90.0, 100)
+        runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, 100)
+        runner.tick(100)
+        runner.finishStageEarly(150)
+
+        val capture = runner.completedCaptures.single()
+        assertEquals(StageOutcome.INSUFFICIENT_QUALITY, capture.outcome)
+        assertFalse(capture.completed)
+        assertTrue(capture.notes.any { it.contains("early", ignoreCase = true) })
+    }
+
+    @Test
+    fun `an early finish with enough samples is partial, not valid`() {
+        val runner = safetyRunner()
+        runner.start(0)
+        for (time in 100L..15_000L step 500) {
+            runner.sample(Signals.RPM, 800.0, time)
+            runner.sample(Signals.COOLANT, 90.0, time)
+            runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, time)
+            runner.tick(time)
+        }
+        runner.finishStageEarly(15_000)
+
+        val capture = runner.completedCaptures.single()
+        assertEquals(StageOutcome.PARTIAL, capture.outcome)
+        assertTrue(capture.notes.any { it.contains("partial", ignoreCase = true) })
+    }
+
+    @Test
+    fun `a complete well-sampled stage stays valid`() {
+        val runner = safetyRunner()
+        runner.start(0)
+        for (time in 100L..21_000L step 500) {
+            runner.sample(Signals.RPM, 800.0, time)
+            runner.sample(Signals.COOLANT, 90.0, time)
+            runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, time)
+            runner.tick(time)
+        }
+
+        val capture = runner.completedCaptures.single()
+        assertEquals(StageOutcome.VALID, capture.outcome)
+        assertTrue(capture.completed)
+    }
+
+    @Test
+    fun `a live safety threshold breach stops the stage`() {
+        val runner = safetyRunner()
+        runner.start(0)
+        runner.sample(Signals.RPM, 800.0, 100L)
+        runner.sample(Signals.COOLANT, 90.0, 100L)
+        runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, 100L)
+        runner.tick(100L)
+        assertEquals(GuidedRunState.CAPTURING, runner.runState)
+
+        runner.sample(Signals.COOLANT, 120.0, 200L)
+        runner.tick(200L)
+
+        assertEquals(GuidedRunState.SAFETY_STOPPED, runner.runState)
+        assertTrue(runner.safetyReason!!.contains("Coolant"))
+        assertTrue(runner.completedCaptures.isEmpty())
+    }
+
+    @Test
+    fun `unsupported safety signals are reported instead of assumed safe`() {
+        val runner = safetyRunner(supported = setOf(Signals.RPM, Signals.CONTROL_MODULE_VOLTAGE))
+        runner.start(0)
+        runner.sample(Signals.RPM, 800.0, 100)
+        runner.sample(Signals.CONTROL_MODULE_VOLTAGE, 13.8, 100)
+        runner.tick(100)
+
+        val snapshot = runner.snapshot(100)
+        assertTrue(snapshot.unverifiedSafetySignals.any { it.contains("Coolant", ignoreCase = true) })
+        assertEquals(SafetyStatus.OK, snapshot.safetyStatus)
     }
 }

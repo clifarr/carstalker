@@ -3,7 +3,106 @@
 All notable changes to CarStalker are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses semantic versioning.
 
-## [Unreleased]
+## [0.5.1] - 2026-11-26
+
+Version code 108. A combined release, since 0.5.1 was never published: recording integrity
+and gap detection, battery guidance for frozen background apps, the other-supported-PIDs
+picker, fresh safety data, honest stage outcomes, foreground-service handling, instrumented
+CI and a published privacy policy.
+
+### Added
+
+- **Recording integrity states.** A recording now reports `Recording`, `Completed` or `Failed`
+  instead of a single boolean. A failed write, flush, close or metadata update is shown on the
+  dashboard and in a notification, and says that the partial file was kept. The index entry is
+  written atomically, so a killed process cannot leave a half-written session that hides a
+  recoverable CSV.
+- **Sampling-gap reporting.** A recording now says when it was not sampling instead of claiming a
+  clean run. The dashboard names the longest pause, the ongoing notification shows the sample
+  count and the clock time of the newest sample (both stop advancing while the phone has frozen
+  the app), and the CSV metadata stores the stall count and longest gap. The Recordings list and a
+  recording's detail header show the pause next to the duration.
+- **Battery settings guidance.** When a recording starts while Android may freeze the app, the
+  dashboard offers a direct link to the app's battery screen, plus the Xiaomi/HyperOS Autostart
+  screen. **Settings → Recording in the background** shows whether the app is exempt and repeats
+  the links, including the "Battery saver → No restrictions" step MIUI needs.
+- **Other supported PIDs.** The parameter picker now lists the standard Mode 01 codes the car
+  advertises but CarStalker has no built-in definition for, instead of only counting them. Tapping
+  a code opens the custom-PID form with that code fixed, so a parameter the app does not define
+  can still reach a dashboard once you give it a name and formula. The vehicle card reports how
+  many of the advertised PIDs have no definition, which explains why that count is higher than the
+  number of selectable parameters. Readiness-monitor and freeze-frame PIDs are excluded: the app
+  reads those itself. Demo mode now advertises two standard codes the catalogue lacks (0x1C OBD
+  standard, 0x51 fuel type), so the list can be seen without a car.
+- **Instrumented tests in CI.** GitHub Actions now runs the Android UI smoke tests on an API 35
+  emulator, alongside the existing unit tests, lint and unsigned AAB build.
+- **Published privacy policy.** The policy is hosted at
+  <https://clifarr.github.io/carstalker/privacy-policy.html>, linked from Settings and the docs.
+
+### Changed
+
+- **Per-car settings are separated from global settings.** Vehicle name, fuel type, aspiration
+  and pedal calibration now live on **Diagnose → Vehicle profile**, not in global Settings. The
+  last car can be renamed directly from the Connect screen. Switching cars no longer inherits the
+  previous car's name, fuel or aspiration; the simulated demo car's profile is repaired once so a
+  real car's name or diesel setting cannot leak into the demo.
+- **Guided catalogue consistency.** Search and filters now sit above the guide list, and
+  “Suggested from this scan”, every category and “Planned workflows” use the same collapsible
+  header. Suggested guides are no longer a flat, differently styled block at the top.
+- **Pedal interpolation is per dashboard.** The old global switch is gone. A dashboard shows a
+  Pedal interpolation toggle that is disabled until the pedal finder has stored a calibration for
+  the current car; running the finder enables it on the active dashboard. Existing installs keep
+  the old choice by migration, and an open recording keeps the interpolation mode it started with.
+
+### Fixed
+
+- **Recording no longer silently loses samples when Android freezes the app.** MIUI/HyperOS freeze
+  apps that are not exempt from battery saving even with a foreground service and a partial wake
+  lock, and the ongoing notification stays visible because the system draws it, not the frozen
+  process. CarStalker now detects the gap as soon as the process resumes, explains it on the
+  dashboard, writes it into the recording metadata and points at the setting that prevents it.
+- **Stopping a recording no longer shows a stale "interrupted, partial file" entry.** The
+  recordings list refreshed as soon as the recording state left `Recording`, which happened before
+  `endedAt` was persisted, so a cleanly saved file looked incomplete until the screen was reopened.
+- **System bars follow the app theme.** The Android night mode is now aligned with the app's
+  theme setting, so the 3-button navigation bar and bottom-sheet dialog themes switch with the
+  app instead of the system theme. The Edit, Replace, dashboard switcher and parameter detail
+  sheets also fill the navigation-bar area with the sheet surface colour, so a forced dark theme
+  no longer leaves a light grey strip or dark-on-dark navigation buttons.
+- **Dashboard parameter picker.** It now uses the same bottom-sheet inset handling as the Replace
+  list, so the last parameter stays above the navigation bar in portrait and landscape without a
+  fixed empty gap.
+- **Parameter detail sheet.** The “Remove from dashboard” / “Pin to dashboard” button is gone;
+  dashboard membership is managed from the parameter picker.
+- **Switch contrast.** Off switches now use a lighter thumb, a distinct track and a visible
+  border. Material's default unchecked thumb and track were the same shade in this theme, so an
+  off switch looked like an empty pill.
+- **Last vehicle card.** It no longer shows a previous car's VIN when the current car does not
+  report one. It shows the car's nickname (or VIN-derived name) and hides when the car is
+  unidentified; naming a car in Settings → Your car makes it appear.
+- **Diagnose page spacing.** The vehicle-profile labels and their chips now have proper
+  breathing room, and guide cards space the status pills away from the “Detected in the … scan”
+  line and the required-signals text.
+- **The pedal finder keeps the throttle recommendation.** When both the pedal and the
+  throttle plate follow the pedal, the result now offers **Use both**, **Use pedal only** and
+  **Use throttle only** instead of dropping the throttle channel. A static throttle plate on the
+  dashboard is still replaced rather than duplicated.
+- **Recording channels no longer follow the dashboard.** Starting a recording snapshots its
+  columns, units, labels and PID list. Switching dashboards keeps sampling and writing every
+  recorded channel with blank cells for unavailable samples instead of silently dropping them.
+- **Safety checks require fresh data.** Guided tests now sample RPM, coolant and voltage
+  independently of the stage's analytics channels. A missing or stale safety signal pauses the
+  stage with an explicit reason instead of passing the gate; an out-of-range value still stops the
+  test. Safety signals the vehicle does not report are listed as unverified rather than assumed
+  safe.
+- **Incomplete stages are no longer valid evidence.** A stage is `Valid` only when it reached its
+  target duration with an adequate sample count. Early finishes are `Partial` or `Insufficient
+  quality`, with a note explaining what is missing.
+- **Background recording service.** The foreground service now always uses the
+  `connectedDevice` type, which matches Bluetooth Classic, BLE, Wi-Fi and USB adapters and avoids
+  the Android 15 `dataSync` time limit. If the service cannot start or Android stops it, the app
+  shows the failure in the dashboard and in a notification instead of implying background capture
+  is still protected.
 
 ## [0.5.0] - 2026-11-25
 

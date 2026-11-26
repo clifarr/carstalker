@@ -14,6 +14,8 @@ import com.carstalker.app.data.CustomPid
 import com.carstalker.app.data.GuidedResultExport
 import com.carstalker.app.data.LogSession
 import com.carstalker.app.data.PedalCalibration
+import com.carstalker.app.data.hasPedalCalibration
+import com.carstalker.app.data.withVehicleProfile
 import com.carstalker.app.data.PdfPreview
 import com.carstalker.app.data.PdfPrinter
 import com.carstalker.app.data.ReportBuilder
@@ -28,6 +30,7 @@ import com.carstalker.app.data.recommendedDashboardPids
 import com.carstalker.app.data.replacedDashboardPids
 import com.carstalker.app.data.toggledDashboardPids
 import com.carstalker.app.di.AppGraph
+import com.carstalker.app.service.BackgroundRecordingPolicy
 import com.carstalker.app.service.ConnectionState
 import com.carstalker.app.transport.ble.BleTransport
 import com.carstalker.app.transport.ble.DiscoveredDevice
@@ -100,6 +103,19 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
     val supportedPids = graph.session.supportedPids
     val dtcReport = graph.session.dtcReport
     val recording = graph.session.recording
+    val recordingState = graph.session.recordingState
+    val recordingIssue = graph.session.recordingIssue
+    val recordingStall = graph.session.recordingStall
+
+    /**
+     * Whether Android is allowed to freeze the app to save power. Recording in the background is
+     * only reliable when this is true; the dashboard and Settings offer a way to change it.
+     */
+    private val _batteryOptimizationExempt = MutableStateFlow(
+        BackgroundRecordingPolicy.isIgnoringBatteryOptimizations(graph.appContext),
+    )
+    val batteryOptimizationExempt: StateFlow<Boolean> = _batteryOptimizationExempt.asStateFlow()
+    val xiaomiDevice: Boolean = BackgroundRecordingPolicy.isXiaomiDevice()
     val bleDevices: StateFlow<List<DiscoveredDevice>> = graph.bleScanner.devices
     val bleScanning: StateFlow<Boolean> = graph.bleScanner.scanning
     val classicDevices: StateFlow<List<ClassicDevice>> = graph.classicScanner.devices
@@ -204,10 +220,15 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         }
         viewModelScope.launch {
             graph.session.identity.collect { identity ->
-                val key = identity.vin?.takeIf { it.isNotBlank() }
-                    ?: identity.calibrationId?.takeIf { it.isNotBlank() }
-                    ?: "unknown"
-                applyVehicleProfile(key)
+                // Clearing identity on disconnect must not switch the profile back to the
+                // anonymous one; keep the last car's settings available for editing.
+                val state = graph.session.state.value
+                if (state is ConnectionState.Ready || state is ConnectionState.Initializing) {
+                    val key = identity.vin?.takeIf { it.isNotBlank() }
+                        ?: identity.calibrationId?.takeIf { it.isNotBlank() }
+                        ?: "unknown"
+                    applyVehicleProfile(key)
+                }
             }
         }
         viewModelScope.launch {
@@ -391,64 +412,74 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
     }
 
     /**
-     * Applies a recommended channel to the active dashboard. A throttle-plate channel that was
-     * on the dashboard and did not move is replaced, so the card count does not grow.
+     * Applies one or more finder recommendations to the active dashboard. A throttle-plate
+     * channel that was on the dashboard and did not move is replaced, so adding the pedal does
+     * not grow the list past its limit. Applying the pedal and throttle together lets the user
+     * compare pedal command with throttle response.
      */
-    fun usePedalChannel(pidId: Int) {
+    fun usePedalChannels(pidIds: List<Int>) {
+        val requested = pidIds.distinct()
+        if (requested.isEmpty()) return
         val supported = supportedPids.value
         val active = settings.value.activeDashboard
         val base = if (active.automatic) recommendedDashboardPids(supported) else active.pids
-        val shortName = PidCatalog.find(pidId)?.shortName ?: "Pedal"
         val result = _pedalCheck.value?.result
-        val reading = result?.readings?.firstOrNull { it.pidId == pidId }
         val vehicleKey = settings.value.profileVehicleKey
-        val calibration = reading
-            ?.takeIf { it.calibrationSpan >= PedalChannelCheck.MOVEMENT_THRESHOLD_PERCENT }
-            ?.let { PedalCalibration(pidId, it.releasedValue, it.pressedValue, vehicleKey) }
-        fun withCalibration(current: AppSettings): AppSettings = if (calibration == null) {
-            current
-        } else {
-            current.copy(
-                pedalCalibrations = current.pedalCalibrations.filterNot {
-                    it.pidId == pidId && it.vehicleKey == calibration.vehicleKey
-                } + calibration,
-            )
+        val calibrations = requested.mapNotNull { pidId ->
+            result?.readings?.firstOrNull { it.pidId == pidId }
+                ?.takeIf { it.calibrationSpan >= PedalChannelCheck.MOVEMENT_THRESHOLD_PERCENT }
+                ?.let { PedalCalibration(pidId, it.releasedValue, it.pressedValue, vehicleKey) }
         }
-        if (pidId in base) {
-            // A second run of the finder should still refresh the calibration of a channel
-            // that is already on the dashboard.
-            if (calibration != null) updateSettings(::withCalibration)
-            viewModelScope.launch { _messages.emit("$shortName is already on the dashboard") }
-            return
-        }
-        val replacePid = PedalChannelCheck.staticThrottlePlateOn(base, result)
-        val updated = PedalChannelCheck.applyToDashboard(
-            base = base,
-            pidId = pidId,
-            replacePid = replacePid,
-            max = MAX_DASHBOARD_PIDS,
-        )
-        if (updated == null) {
-            viewModelScope.launch {
-                _messages.emit("A dashboard can show up to $MAX_DASHBOARD_PIDS values. Remove one first.")
+        val update = PedalChannelCheck.applyRecommendations(base, requested, result, MAX_DASHBOARD_PIDS)
+        val already = update.skipped.filter { it in base }
+        val full = update.skipped.filterNot { it in base }
+        if (update.added.isEmpty() && calibrations.isEmpty()) {
+            val message = when {
+                already.size == requested.size && requested.isNotEmpty() ->
+                    "${pedalNames(already)} already on the dashboard"
+                else -> "A dashboard can show up to $MAX_DASHBOARD_PIDS values. Remove one first."
             }
+            viewModelScope.launch { _messages.emit(message) }
             return
         }
         updateSettings { current ->
-            withCalibration(current).copy(
+            val withCalibrations = if (calibrations.isEmpty()) {
+                current
+            } else {
+                current.copy(
+                    pedalCalibrations = current.pedalCalibrations.filterNot { existing ->
+                        calibrations.any { it.pidId == existing.pidId && it.vehicleKey == existing.vehicleKey }
+                    } + calibrations,
+                )
+            }
+            withCalibrations.copy(
                 dashboards = current.dashboards.map {
-                    if (it.id == active.id) it.copy(pids = updated, automatic = false) else it
+                    if (it.id == active.id) {
+                        it.copy(
+                            pids = update.pids,
+                            automatic = false,
+                            pedalInterpolation = calibrations.isNotEmpty() || it.pedalInterpolation,
+                        )
+                    } else {
+                        it
+                    }
                 },
             )
         }
-        val replaced = replacePid?.let { PidCatalog.find(it)?.shortName }
-        val message = if (replaced != null) {
-            "$shortName replaced $replaced on the dashboard"
-        } else {
-            "$shortName added to the dashboard"
+        val parts = buildList {
+            if (update.added.isNotEmpty()) add("added ${pedalNames(update.added)}")
+            if (update.replaced.isNotEmpty()) add("replaced ${pedalNames(update.replaced)}")
+            if (already.isNotEmpty()) add("already on the dashboard: ${pedalNames(already)}")
+            if (full.isNotEmpty()) add("dashboard full: ${pedalNames(full)} not added")
         }
-        viewModelScope.launch { _messages.emit(message) }
+        val message = parts.joinToString("; ").replaceFirstChar { it.uppercase() }
+        viewModelScope.launch { _messages.emit(message.ifBlank { "Dashboard updated" }) }
     }
+
+    fun usePedalChannel(pidId: Int) = usePedalChannels(listOf(pidId))
+
+    private fun pedalNames(ids: List<Int>): String =
+        ids.joinToString { PidCatalog.find(it)?.shortName ?: "PID" }
 
     // ---- Guided diagnostics ----------------------------------------------
 
@@ -768,6 +799,28 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         if (recording.value) graph.session.stopRecording() else graph.session.startRecording()
     }
 
+    fun clearRecordingIssue() = graph.session.clearRecordingIssue()
+
+    fun clearRecordingStall() = graph.session.clearRecordingStall()
+
+    /** Re-reads the battery exemption after the user returns from the system settings. */
+    fun refreshBackgroundPolicy() {
+        _batteryOptimizationExempt.value =
+            BackgroundRecordingPolicy.isIgnoringBatteryOptimizations(graph.appContext)
+    }
+
+    fun openAppBatterySettings() {
+        if (!BackgroundRecordingPolicy.openAppBatterySettings(context)) {
+            viewModelScope.launch { _messages.emit("No battery settings screen accepted that request") }
+        }
+    }
+
+    fun openAutostartSettings() {
+        if (!BackgroundRecordingPolicy.openAutostartSettings(context)) {
+            viewModelScope.launch { _messages.emit("This phone has no separate autostart setting") }
+        }
+    }
+
     /** Re-posts the foreground notification after the user grants notification permission. */
     fun refreshRecordingNotification() {
         if (recording.value) graph.session.refreshRecordingNotification()
@@ -783,8 +836,23 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
 
     fun setKeepScreenOn(enabled: Boolean) = updateSettings { it.copy(keepScreenOn = enabled) }
 
-    fun setPedalCalibrationEnabled(enabled: Boolean) =
-        updateSettings { it.copy(pedalCalibrationEnabled = enabled) }
+    /** Enables pedal interpolation for one dashboard. Requires a finder calibration for this car. */
+    fun setDashboardPedalInterpolation(id: String, enabled: Boolean) {
+        val current = settings.value
+        if (enabled && !current.hasPedalCalibration()) {
+            viewModelScope.launch {
+                _messages.emit("Run the pedal finder before enabling pedal interpolation.")
+            }
+            return
+        }
+        updateSettings { latest ->
+            latest.copy(
+                dashboards = latest.dashboards.map {
+                    if (it.id == id) it.copy(pedalInterpolation = enabled) else it
+                },
+            )
+        }
+    }
 
     fun setTransport(kind: TransportKind) = updateSettings { it.copy(lastTransport = kind) }
 
@@ -1002,31 +1070,7 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
      */
     fun applyVehicleProfile(vehicleKey: String) {
         if (vehicleKey.isBlank()) return
-        updateSettings { current ->
-            if (current.profileVehicleKey == vehicleKey) return@updateSettings current
-            val stored = current.vehicleProfiles[vehicleKey]
-            // A profile entered before the first connection belongs to the first car seen.
-            val preConnection = if (current.profileVehicleKey == "unknown") {
-                current.vehicleProfiles["unknown"]
-            } else {
-                null
-            }
-            val base = stored ?: preConnection?.let {
-                VehicleProfileEntry(current.fuelType, current.aspiration)
-            }
-            // A name typed before connecting survives even if this car already has a profile.
-            val effective = base?.copy(nickname = base.nickname ?: preConnection?.nickname)
-            current.copy(
-                profileVehicleKey = vehicleKey,
-                fuelType = effective?.fuelType ?: FuelType.UNKNOWN,
-                aspiration = effective?.aspiration ?: Aspiration.UNKNOWN,
-                vehicleProfiles = if (effective != null && effective != stored) {
-                    current.vehicleProfiles + (vehicleKey to effective)
-                } else {
-                    current.vehicleProfiles
-                },
-            )
-        }
+        updateSettings { it.withVehicleProfile(vehicleKey) }
     }
 
     fun openPidPicker() { _showPidPicker.value = true }
@@ -1103,18 +1147,61 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 val ready = connection.value as? ConnectionState.Ready
+                val isDemo = ready?.transportName?.contains("Demo") == true
+                val scan = dtcReport.value
+                val result = _guidedResult.value
+                val lastLog = _logs.value.firstOrNull()
+                val pids = supportedPids.value
+                    .sorted()
+                    .map { com.carstalker.core.obd.PidCatalog.find(it)?.shortName ?: "0x${it.toString(16)}" }
                 val text = buildString {
-                    appendLine("CarStalker connection diagnostics")
+                    appendLine("CarStalker diagnostic report")
                     appendLine("App: ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
                     appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
                     appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
                     appendLine("Connection: ${connection.value::class.simpleName}")
+                    appendLine("Data source: ${if (isDemo) "Demo simulator (not a real vehicle)" else "Measured ECU data"}")
                     appendLine("Transport: ${ready?.transportName ?: "not connected"}")
                     appendLine("Adapter: ${ready?.adapter?.identifier ?: "not connected"}")
                     appendLine("Protocol: ${ready?.adapter?.protocolName ?: "unknown"}")
-                    appendLine("Supported PIDs: ${supportedPids.value.size}")
+                    appendLine("Supported PIDs (${pids.size}): ${pids.take(40).joinToString()}" +
+                        if (pids.size > 40) ", ..." else "")
+                    benchmark.value?.let {
+                        appendLine("Adapter benchmark: ${String.format(java.util.Locale.US, "%.1f", it.requestsPerSecond)} requests/s")
+                    }
+                    appendLine(
+                        "Last code scan: " + if (scan.readAt > 0) {
+                            "${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date(scan.readAt))} · " +
+                                "stored ${scan.stored.size}, pending ${scan.pending.size}, permanent ${scan.permanent.size} · " +
+                                "Mode 06 ${scan.mode06.state.name.lowercase()}"
+                        } else {
+                            "not run"
+                        },
+                    )
+                    appendLine(
+                        "Last guided result: " + if (result != null) {
+                            "${result.title} · ${result.status.label} · " +
+                                result.stages.joinToString { "${it.title}=${it.outcome.label}" }
+                        } else {
+                            "not run"
+                        },
+                    )
+                    appendLine(
+                        "Last recording: " + if (lastLog != null) {
+                            "${lastLog.meta.id} · ${lastLog.meta.rows} rows · ${lastLog.meta.columns.size} channels · " +
+                                "${lastLog.durationMs / 1000} s · ${if (lastLog.incomplete) "interrupted" else "closed"}"
+                        } else {
+                            "none"
+                        },
+                    )
                     appendLine("Vehicle identity: not included")
+                    appendLine("Location: not included")
                     appendLine("Generated: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}")
+                    appendLine()
+                    appendLine("Problem description:")
+                    appendLine("Steps to reproduce:")
+                    appendLine("Expected:")
+                    appendLine("Actual:")
                 }
                 val file = withContext(Dispatchers.IO) {
                     val directory = File(context.filesDir, "diagnostics").apply { mkdirs() }
@@ -1126,7 +1213,11 @@ class CarStalkerViewModel(private val graph: AppGraph) : ViewModel() {
                 val intent = Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
                     putExtra(Intent.EXTRA_STREAM, uri)
-                    putExtra(Intent.EXTRA_SUBJECT, "CarStalker connection diagnostics")
+                    putExtra(Intent.EXTRA_SUBJECT, "CarStalker diagnostic report")
+                    putExtra(
+                        Intent.EXTRA_TEXT,
+                        "Problem description:\nSteps to reproduce:\nExpected:\nActual:\n",
+                    )
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
                 context.startActivity(

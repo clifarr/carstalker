@@ -9,9 +9,15 @@ import com.carstalker.app.data.AppSettings
 import com.carstalker.app.data.LogColumnMeta
 import com.carstalker.app.data.LogRepository
 import com.carstalker.app.data.LogWriter
+import com.carstalker.app.data.RecordingPlan
+import com.carstalker.app.data.RecordingStall
 import com.carstalker.app.data.SettingsRepository
-import com.carstalker.app.data.recommendedDashboardPids
+import com.carstalker.app.data.buildRecordingPlan
+import com.carstalker.app.data.withDemoProfile
+import com.carstalker.app.data.mergedPollPids
+import com.carstalker.app.data.samplingGapMs
 import com.carstalker.app.data.toPid
+import com.carstalker.app.data.visiblePollPids
 import com.carstalker.app.transport.demo.DemoControllable
 import com.carstalker.app.transport.demo.DemoScenario
 import com.carstalker.core.dtc.Dtc
@@ -79,6 +85,18 @@ sealed interface ConnectionState {
     data class Ready(val adapter: AdapterInfo, val transportName: String) : ConnectionState
     data class Error(val message: String) : ConnectionState
 }
+
+/** Lifecycle of a drive recording. "Saved" is only shown after [RecordingState.COMPLETED]. */
+enum class RecordingState {
+    IDLE,
+    RECORDING,
+    STOPPING,
+    COMPLETED,
+    FAILED,
+}
+
+/** Samples written to the open recording, and when the newest one landed. */
+data class RecordingProgress(val rows: Long, val lastSampleAt: Long)
 
 data class LiveSnapshot(
     val values: Map<Int, Double> = emptyMap(),
@@ -160,7 +178,30 @@ class ObdSession(
     private var transport: Transport? = null
     private var obd: ObdClient? = null
     private var pollJob: Job? = null
+
+    /** Recording channels snapshotted at start; dashboards cannot change them mid-file. */
+    @Volatile
     private var writer: LogWriter? = null
+
+    @Volatile
+    private var recordingPlan: RecordingPlan? = null
+
+    /**
+     * Monotonic time of the last completed adapter exchange. The poll loop advances it before
+     * every read, so a long silence means the loop itself was not running (Android froze the
+     * process) rather than one slow Bluetooth Classic exchange. Uses elapsed realtime so a
+     * suspend counts as a gap and a clock change cannot fake one.
+     */
+    @Volatile
+    private var lastPollProgressAt = 0L
+
+    /** Rows written to the open recording and the newest sample time, for the notification. */
+    @Volatile
+    private var recordedRows = 0L
+
+    @Volatile
+    private var recordedLastAt = 0L
+
     private val scheduler = PollScheduler()
     private val captureMutex = Mutex()
     private val lastValues = mutableMapOf<Int, Double>()
@@ -213,6 +254,30 @@ class ObdSession(
     private val _recording = MutableStateFlow(false)
     val recording: StateFlow<Boolean> = _recording.asStateFlow()
 
+    private val _recordingState = MutableStateFlow(RecordingState.IDLE)
+    val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
+
+    /** Set when a recording failed or could not be protected in the background. */
+    private val _recordingIssue = MutableStateFlow<String?>(null)
+    val recordingIssue: StateFlow<String?> = _recordingIssue.asStateFlow()
+
+    /** Sampling gaps in the current or most recent recording; null until one is detected. */
+    private val _recordingStall = MutableStateFlow<RecordingStall?>(null)
+    val recordingStall: StateFlow<RecordingStall?> = _recordingStall.asStateFlow()
+
+    val isRecording: Boolean get() = _recordingState.value == RecordingState.RECORDING
+
+    fun clearRecordingIssue() {
+        _recordingIssue.value = null
+    }
+
+    fun clearRecordingStall() {
+        _recordingStall.value = null
+    }
+
+    /** Rows written so far and the newest sample time; the service shows this in the notification. */
+    fun recordingProgress(): RecordingProgress = RecordingProgress(recordedRows, recordedLastAt)
+
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
 
@@ -261,8 +326,16 @@ class ObdSession(
             val ecuName = runCatching { newObd.readEcuName() }.getOrNull()
             _identity.value = VehicleIdentity(vin, calibration, cvn, ecuName)
 
-            settings.update {
-                it.copy(lastVin = vin ?: it.lastVin)
+            val vehicleKey = vin?.takeIf { it.isNotBlank() }
+                ?: calibration?.takeIf { it.isNotBlank() }
+                ?: "unknown"
+            val demo = newTransport is DemoControllable
+            settings.update { current ->
+                // Repair the simulated car once after the old global fallback could copy a real
+                // car's name and fuel type onto it. Later demo edits are preserved.
+                val repaired = if (demo) current.withDemoProfile(vehicleKey) else current
+                // Never keep a previous car's VIN when this car does not report one.
+                repaired.copy(lastVin = vin)
             }
 
             _state.value = ConnectionState.Ready(info, newTransport.displayName)
@@ -455,6 +528,7 @@ class ObdSession(
                     scan = scan,
                     baseline = baseline,
                     vehicleKey = vehicleKey,
+                    unverifiedSafetySignals = runner.unverifiedSafetySignals,
                 ),
             )
             return@withLock GuidedRunOutcome(result, emptyList(), runner.snapshot(System.currentTimeMillis()))
@@ -551,6 +625,7 @@ class ObdSession(
                 skippedStages = runner.skippedStages,
                 adapterVoltageUsed = captures.any { AnalysisSupport.usesAdapterVoltage(it) },
                 safetyStopReason = runner.safetyReason,
+                unverifiedSafetySignals = runner.unverifiedSafetySignals,
                 cancelled = runner.cancelled,
                 connectionLost = connectionLost,
                 scan = scan,
@@ -609,18 +684,23 @@ class ObdSession(
             }
         }
         if (columns.isEmpty()) return@withContext false
-        val writer = logs.createSession(
-            vin = currentIdentity.vin,
-            adapter = ready?.adapter?.identifier,
-            protocol = ready?.adapter?.protocolName,
-            appVersion = BuildConfig.VERSION_NAME,
-            columns = columns,
-            startedAt = captures.minOf { it.capture.startedAt },
-            kind = "guided",
-            label = definition.title,
-            isDemo = ready?.transportName?.contains("Demo") == true,
-        )
-        try {
+        val writer = try {
+            logs.createSession(
+                vin = currentIdentity.vin,
+                adapter = ready?.adapter?.identifier,
+                protocol = ready?.adapter?.protocolName,
+                appVersion = BuildConfig.VERSION_NAME,
+                columns = columns,
+                startedAt = captures.minOf { it.capture.startedAt },
+                kind = "guided",
+                label = definition.title,
+                isDemo = ready?.transportName?.contains("Demo") == true,
+            )
+        } catch (t: Throwable) {
+            _notice.value = "Guided capture could not be saved: ${t.message ?: "file error"}"
+            return@withContext false
+        }
+        val result = try {
             for (stage in captures) {
                 stage.capture.points
                     .groupBy { it.timestampMs }
@@ -629,8 +709,13 @@ class ObdSession(
                         writer.append(timestamp, points.associate { it.pid to it.value })
                     }
             }
-        } finally {
             writer.close(endedAt = captures.maxOf { it.capture.endedAt })
+        } catch (t: Throwable) {
+            writer.close()
+        }
+        if (!result.success) {
+            _notice.value = result.message ?: "Guided capture could not be saved"
+            return@withContext false
         }
         _notice.value = "Guided capture saved to recordings"
         true
@@ -667,31 +752,60 @@ class ObdSession(
     }
 
     fun startRecording() {
-        if (_recording.value) return
+        if (_recordingState.value == RecordingState.RECORDING ||
+            _recordingState.value == RecordingState.STOPPING
+        ) {
+            return
+        }
         val currentIdentity = _identity.value
         val ready = _state.value as? ConnectionState.Ready
-        writer = logs.createSession(
-            vin = currentIdentity.vin,
-            adapter = ready?.adapter?.identifier,
-            protocol = ready?.adapter?.protocolName,
-            appVersion = BuildConfig.VERSION_NAME,
-            columns = recordingColumns(settingsFlow.value),
-            kind = "drive",
-            label = null,
-            isDemo = ready?.transportName?.contains("Demo") == true,
-        )
-        _recording.value = true
-        RecordingService.start(context)
-        _notice.value = "Recording started"
+        val plan = try {
+            buildRecordingPlan(settingsFlow.value, _supportedPids.value)
+        } catch (t: Throwable) {
+            val reason = "Recording could not start: ${t.message ?: "the channel list could not be built"}"
+            _recordingIssue.value = reason
+            setRecordingState(RecordingState.FAILED)
+            _notice.value = reason
+            return
+        }
+        val newWriter = try {
+            logs.createSession(
+                vin = currentIdentity.vin,
+                adapter = ready?.adapter?.identifier,
+                protocol = ready?.adapter?.protocolName,
+                appVersion = BuildConfig.VERSION_NAME,
+                columns = plan.columns,
+                kind = "drive",
+                label = null,
+                isDemo = ready?.transportName?.contains("Demo") == true,
+            )
+        } catch (t: Throwable) {
+            val reason = "Recording could not start: ${t.message ?: "could not create the log file"}"
+            _recordingIssue.value = reason
+            setRecordingState(RecordingState.FAILED)
+            _notice.value = reason
+            return
+        }
+        writer = newWriter
+        recordingPlan = plan
+        recordedRows = 0L
+        recordedLastAt = 0L
+        _recordingIssue.value = null
+        _recordingStall.value = null
+        setRecordingState(RecordingState.RECORDING)
+        if (!RecordingService.start(context)) {
+            val reason = "Recording continues, but the background service could not start. " +
+                "Keep the app open, or lock-screen recording may stop."
+            _recordingIssue.value = reason
+            _notice.value = reason
+        } else {
+            _notice.value = "Recording started: ${plan.pids.size} channels"
+        }
     }
 
     fun stopRecording() {
-        if (!_recording.value) return
-        writer?.close()
-        writer = null
-        _recording.value = false
-        RecordingService.stop(context)
-        _notice.value = "Recording saved"
+        if (_recordingState.value != RecordingState.RECORDING) return
+        finishRecording(RecordingState.COMPLETED)
     }
 
     /**
@@ -699,24 +813,115 @@ class ObdSession(
      * was already running; starting it again updates the existing foreground notification.
      */
     fun refreshRecordingNotification() {
-        if (_recording.value) RecordingService.start(context)
+        if (isRecording) RecordingService.start(context)
+    }
+
+    /** Called by the foreground service when it cannot protect background capture. */
+    fun reportBackgroundFailure(reason: String) {
+        if (!isRecording) return
+        _recordingIssue.value = reason
+        _notice.value = reason
+    }
+
+    private fun finishRecording(outcome: RecordingState, message: String? = null) {
+        val current = _recordingState.value
+        if (current != RecordingState.RECORDING && current != RecordingState.STOPPING) return
+        // Keep _recording true until the writer is closed: the UI refreshes the recordings list
+        // when it flips, and reading the index before close() persists endedAt made a saved
+        // recording look like an interrupted, partial file.
+        _recordingState.value = RecordingState.STOPPING
+        val active = writer
+        writer = null
+        recordingPlan = null
+        val result = active?.close()
+        if (result?.success == true && outcome == RecordingState.COMPLETED) {
+            setRecordingState(RecordingState.COMPLETED)
+            _notice.value = message ?: "Recording saved"
+        } else {
+            val reason = result?.message
+                ?: message
+                ?: "The recording could not be saved. The partial file was kept."
+            setRecordingState(RecordingState.FAILED)
+            _recordingIssue.value = reason
+            _notice.value = reason
+        }
+        RecordingService.stop(context)
+    }
+
+    private fun failRecording(reason: String) {
+        if (_recordingState.value != RecordingState.RECORDING) return
+        android.util.Log.w("ObdSession", reason)
+        finishRecording(RecordingState.FAILED, reason)
+    }
+
+    private fun setRecordingState(state: RecordingState) {
+        _recordingState.value = state
+        _recording.value = state == RecordingState.RECORDING
+    }
+
+    /**
+     * Writes one cycle into the recording. A write failure ends the recording immediately so
+     * the UI can never keep showing a live recording while data is being lost.
+     */
+    private fun appendRecording(timestampMs: Long, values: Map<Int, Double>) {
+        val active = writer ?: return
+        try {
+            active.append(timestampMs, values)
+            recordedRows++
+            recordedLastAt = timestampMs
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            failRecording(
+                "Recording stopped: ${t.message ?: "the log file could not be written"}. " +
+                    "The partial file was kept.",
+            )
+        }
+    }
+
+    /**
+     * Marks the poll loop as alive and reports a gap if the loop was stopped since the previous
+     * mark. Called before every adapter read: a slow exchange never counts as a stall, but a
+     * frozen process does, and the gap is written into the recording's metadata once it resumes.
+     */
+    private fun markPollProgress() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val gap = samplingGapMs(lastPollProgressAt, now)
+        if (gap != null && isRecording) noteSamplingStall(gap)
+        lastPollProgressAt = now
+    }
+
+    private fun noteSamplingStall(gapMs: Long) {
+        val previous = _recordingStall.value
+        _recordingStall.value = RecordingStall(
+            longestMs = maxOf(previous?.longestMs ?: 0L, gapMs),
+            totalMs = (previous?.totalMs ?: 0L) + gapMs,
+            count = (previous?.count ?: 0) + 1,
+            detectedAt = System.currentTimeMillis(),
+        )
+        writer?.noteStall(gapMs)
+        android.util.Log.w(
+            "ObdSession",
+            "No samples for ${gapMs / 1000}s while recording; the poll loop was not running",
+        )
     }
 
     private fun startPolling() {
         pollJob?.cancel()
+        lastPollProgressAt = android.os.SystemClock.elapsedRealtime()
         pollJob = scope.launch {
             var adapterFailures = 0
             freshness.start(System.currentTimeMillis())
             while (isActive) {
                 val obd = obd ?: break
+                markPollProgress()
                 val current = settingsFlow.value
-                val dashboardRequested = requestedPollPids(current)
+                val dashboardRequested = visiblePollPids(current, _supportedPids.value)
+                // Recording subscriptions are merged into every cycle, so switching dashboards
+                // cannot stop the channels that the open CSV already claims to contain.
+                val recordingPids = recordingPlan?.pids.orEmpty()
                 val focus = focusPid
-                val requested = if (focus != null && focus !in dashboardRequested) {
-                    dashboardRequested + focus
-                } else {
-                    dashboardRequested
-                }
+                val requested = mergedPollPids(dashboardRequested, recordingPids, focus)
                 val ecuExpected = requested.isNotEmpty()
                 val pids = buildPollList(current, requested, focus)
                 val started = System.currentTimeMillis()
@@ -732,6 +937,7 @@ class ObdSession(
                 } catch (_: Throwable) {
                     null
                 }
+                markPollProgress()
                 if (voltage != null) {
                     lastValues[LiveKeys.ADAPTER_VOLTAGE] = voltage
                     publishLive(voltage, ecuExpected)
@@ -744,7 +950,7 @@ class ObdSession(
                         val now = System.currentTimeMillis()
                         val cycleValues = mapOf(LiveKeys.ADAPTER_VOLTAGE to voltage)
                         _samples.value = LiveSnapshot(cycleValues, voltage, now)
-                        runCatching { writer?.append(now, cycleValues) }
+                        appendRecording(now, cycleValues)
                     }
                     publishLive(voltage, ecuExpected, sampled = false)
                     adapterFailures = if (voltage == null) adapterFailures + 1 else 0
@@ -759,6 +965,10 @@ class ObdSession(
                     continue
                 }
                 val values = LinkedHashMap<Int, Double>()
+                // Recorded values use the interpolation mode snapshotted at recording start, so
+                // switching to a dashboard with a different setting cannot change the file.
+                val recordValues = LinkedHashMap<Int, Double>()
+                val plan = recordingPlan
                 for (pid in pids) {
                     if (!isActive) break
                     val raw = try {
@@ -768,15 +978,26 @@ class ObdSession(
                     } catch (_: Throwable) {
                         null
                     }
-                    val value = raw
-                        ?.takeIf { it.isFinite() }
-                        ?.let { applyPedalCalibration(pid.id, it, current) }
+                    markPollProgress()
+                    val rawValue = raw?.takeIf { it.isFinite() }
+                    val value = rawValue?.let {
+                        applyPedalCalibration(
+                            pid.id,
+                            it,
+                            current,
+                            current.activeDashboard.pedalInterpolation,
+                        )
+                    }
+                    val recordValue = rawValue?.let {
+                        applyPedalCalibration(pid.id, it, current, plan?.pedalInterpolation == true)
+                    }
                     val answered = value != null && value.isFinite()
                     scheduler.record(pid.id, answered)
                     val answeredAt = System.currentTimeMillis()
                     if (answered) {
                         values[pid.id] = value
                         lastValues[pid.id] = value
+                        recordValues[pid.id] = recordValue ?: value
                         freshness.sample(answeredAt)
                     } else {
                         freshness.miss(answeredAt)
@@ -791,8 +1012,9 @@ class ObdSession(
                     val cycleValues = values.toMutableMap()
                     voltage?.let { cycleValues[LiveKeys.ADAPTER_VOLTAGE] = it }
                     _samples.value = LiveSnapshot(cycleValues, voltage, now)
-                    val logValues = cycleValues
-                    runCatching { writer?.append(now, logValues) }
+                    val logValues = recordValues.toMutableMap()
+                    voltage?.let { logValues[LiveKeys.ADAPTER_VOLTAGE] = it }
+                    appendRecording(now, logValues)
                 } else {
                     adapterFailures++
                     if (adapterFailures >= ADAPTER_FAILURE_LIMIT) {
@@ -861,20 +1083,6 @@ class ObdSession(
         if (scheduler.cycle % every == 0L) scheduler.retrySilent()
     }
 
-    /**
-     * Every OBD parameter the active dashboard wants, before the poll scheduler thins the list.
-     * This is what tells the freshness monitor whether ECU data is expected at all: a
-     * voltage-only dashboard must not be reported as an offline vehicle.
-     */
-    private fun requestedPollPids(current: AppSettings): List<Int> {
-        val dashboard = current.activeDashboard
-        val dashboardPids = dashboard.resolvePids(_supportedPids.value)
-        // Poll exactly what the active dashboard shows: its tiles plus the gauges/mini stats when
-        // they are visible. The adapter voltage is read separately with ATRV.
-        val gaugePids = if (dashboard.showGauges) GAUGE_PIDS else emptyList()
-        return (dashboardPids + gaugePids).distinct().filter { it >= 0 }
-    }
-
     private fun buildPollList(current: AppSettings, requested: List<Int>, priority: Int? = null): List<Pid> {
         val custom = current.customPids
             .filter { it.enabled }
@@ -884,18 +1092,11 @@ class ObdSession(
         return scheduled.mapNotNull { id -> custom[id] ?: PidCatalog.find(id) }
     }
 
-    private fun recordingColumns(current: AppSettings): List<LogColumnMeta> {
-        val custom = current.customPids
-            .filter { it.enabled }
-            .mapNotNull { it.toPid() }
-            .associateBy { it.id }
-        val pids = requestedPollPids(current).mapNotNull { id -> custom[id] ?: PidCatalog.find(id) }
-        return (listOf(AdapterVoltageParam) + pids)
-            .distinctBy { it.id }
-            .map { LogColumnMeta(it.id, it.name, it.unit) }
-    }
-
     private fun loseConnection() {
+        finishRecording(
+            RecordingState.FAILED,
+            "Connection lost. Recording stopped; the partial file was kept.",
+        )
         _state.value = ConnectionState.Error("Lost communication with the vehicle")
         _live.value = LiveSnapshot()
         freshness.reset()
@@ -912,9 +1113,6 @@ class ObdSession(
     }
 
     private companion object {
-        /** Values the visible gauges and mini stats need: RPM, speed, load and coolant. */
-        val GAUGE_PIDS = listOf(0x0C, 0x0D, 0x04, 0x05)
-
         /** How often retired parameters are given another chance. */
         const val RETRY_SILENT_EVERY = 30L
 

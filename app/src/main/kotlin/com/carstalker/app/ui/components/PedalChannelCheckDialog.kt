@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -104,7 +105,7 @@ fun PedalChannelCheckDialog(
                                 color = stalker.accent,
                             )
                             Text(
-                                "Find the channel that follows your pedal",
+                                "Find the channels that follow your pedal",
                                 style = MaterialTheme.typography.titleLarge,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
@@ -204,8 +205,9 @@ fun PedalChannelCheckDialog(
                             if (result.readings.any { it.needsInterpolation }) {
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "The released and fully pressed readings are used to rescale the " +
-                                        "channel to 0–100 %. You can turn this off in Settings → Your car.",
+                                    "The released and fully pressed readings are used to rescale each " +
+                                        "channel to 0–100 %. Interpolation is turned on for this dashboard; " +
+                                        "each dashboard can change it in the Dashboards sheet.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = stalker.muted,
                                 )
@@ -219,13 +221,22 @@ fun PedalChannelCheckDialog(
                                         recommended = reading.pidId in result.recommended,
                                     )
                                 }
-                            if (result.recommended.isNotEmpty()) {
+                            val pedal = result.recommendedPedal
+                            val throttle = result.recommendedThrottle
+                            if (pedal != null && throttle != null) {
                                 Spacer(Modifier.height(12.dp))
-                                val best = result.recommended.first()
-                                val bestName = PidCatalog.find(best)?.shortName ?: "Pedal"
+                                Text(
+                                    "Both the pedal and the throttle plate followed your foot. " +
+                                        "Add both to compare pedal command with throttle response.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = stalker.muted,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                val pedalName = PidCatalog.find(pedal)?.shortName ?: "Pedal"
+                                val throttleName = PidCatalog.find(throttle)?.shortName ?: "Throttle"
                                 Button(
                                     onClick = {
-                                        viewModel.usePedalChannel(best)
+                                        viewModel.usePedalChannels(listOf(pedal, throttle))
                                         close()
                                     },
                                     modifier = Modifier.fillMaxWidth(),
@@ -233,7 +244,41 @@ fun PedalChannelCheckDialog(
                                         containerColor = stalker.accent,
                                         contentColor = Color.Black,
                                     ),
-                                ) { Text("Use $bestName on this dashboard") }
+                                ) { Text("Use $pedalName + $throttleName on this dashboard") }
+                                Spacer(Modifier.height(6.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            viewModel.usePedalChannels(listOf(pedal))
+                                            close()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("Use $pedalName only") }
+                                    OutlinedButton(
+                                        onClick = {
+                                            viewModel.usePedalChannels(listOf(throttle))
+                                            close()
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("Use $throttleName only") }
+                                }
+                            } else {
+                                val only = pedal ?: throttle
+                                if (only != null) {
+                                    Spacer(Modifier.height(12.dp))
+                                    val onlyName = PidCatalog.find(only)?.shortName ?: "Pedal"
+                                    Button(
+                                        onClick = {
+                                            viewModel.usePedalChannels(listOf(only))
+                                            close()
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = stalker.accent,
+                                            contentColor = Color.Black,
+                                        ),
+                                    ) { Text("Use $onlyName on this dashboard") }
+                                }
                             }
                             Spacer(Modifier.height(8.dp))
                             OutlinedButton(

@@ -2,6 +2,8 @@ package com.carstalker.app.data
 
 import com.carstalker.core.obd.Pid
 import com.carstalker.core.obd.PidCatalog
+import com.carstalker.core.obd.PidSupport
+import com.carstalker.core.vehicle.VehicleIdentity
 
 /** Synthetic parameter ids for values CarStalker measures itself rather than reading from a PID. */
 object LiveKeys {
@@ -120,20 +122,88 @@ fun recommendedDashboardPids(
 /** Top-weighted defaults, used before the car's supported-PID bitmap is known. */
 val DefaultDashboardPids: List<Int> = recommendedDashboardPids(emptySet())
 
+/**
+ * Mode 01 PIDs CarStalker reads for itself but never offers as a dashboard parameter: PID 01 is
+ * the readiness monitor status and PID 02 is the freeze-frame DTC. They appear in every support
+ * bitmap, but they are not "undefined" parameters.
+ */
+private val AppReadOnlyMode01Pids = setOf(0x01, 0x02)
+
+/**
+ * Advertised Mode 01 PIDs that CarStalker has no definition for, so they cannot be shown on a
+ * dashboard. A custom PID counts as defined even while it is disabled: the user already knows
+ * about it.
+ */
+fun otherSupportedPids(supported: Set<Int>, customPids: List<CustomPid> = emptyList()): List<Int> =
+    PidSupport.unlisted(
+        supported,
+        known = PidCatalog.standard.mapTo(mutableSetOf()) { it.id } +
+            customPids.map { it.id } +
+            AppReadOnlyMode01Pids,
+    )
+
 fun dashboardParam(id: Int): Pid? =
     if (id == LiveKeys.ADAPTER_VOLTAGE) AdapterVoltageParam else PidCatalog.find(id)
 
+/** Pedal/throttle channels calibrated for the car currently shown in settings. */
+fun AppSettings.calibratedPedalPids(): Set<Int> =
+    pedalCalibrations
+        .filter { it.vehicleKey == profileVehicleKey }
+        .map { it.pidId }
+        .toSet()
+
+fun AppSettings.hasPedalCalibration(): Boolean = calibratedPedalPids().isNotEmpty()
+
+/** A useful name and optional secondary line for the Connect screen's last-vehicle card. */
+data class LastVehicleLabel(val name: String, val detail: String? = null)
+
 /**
- * Applies the pedal finder's calibration to a raw channel value. Interpolation is on by
- * default, so a car that reports 12 % released and 88 % pressed reads 0–100 % like a car
- * that already uses the full range.
+ * Returns null when the last car is unidentified, so the card can stay out of the way. A VIN is
+ * only used when it matches the current profile key; that prevents a previous car's VIN from
+ * surviving on a car that does not report one.
  */
-fun applyPedalCalibration(pidId: Int, value: Double, settings: AppSettings): Double {
-    if (!settings.pedalCalibrationEnabled) return value
+fun AppSettings.lastVehicleLabel(): LastVehicleLabel? {
+    val key = profileVehicleKey
+    val nickname = vehicleProfiles[key]?.nickname?.takeIf { it.isNotBlank() }
+    val vinName = lastVin
+        ?.takeIf { it == key }
+        ?.let { VehicleIdentity(vin = it).displayName }
+    return when {
+        nickname != null -> LastVehicleLabel(nickname, vinName?.takeIf { it != nickname })
+        vinName != null -> LastVehicleLabel(vinName)
+        else -> null
+    }
+}
+
+/**
+ * Applies the pedal finder's calibration to a raw channel value when [enabled]. The calibration
+ * is stored per vehicle, so switching to a car without a calibration leaves the value unchanged.
+ */
+fun applyPedalCalibration(
+    pidId: Int,
+    value: Double,
+    settings: AppSettings,
+    enabled: Boolean = settings.activeDashboard.pedalInterpolation,
+): Double {
+    if (!enabled) return value
     val calibration = settings.pedalCalibrations.firstOrNull {
         it.pidId == pidId && it.vehicleKey == settings.profileVehicleKey
     } ?: return value
     return calibration.normalize(value) ?: value
+}
+
+/**
+ * Older builds had one global "interpolate pedal readings" switch. It is now per dashboard.
+ * Enable the new flag on existing dashboards only when the old switch was on and at least one
+ * calibration exists, so a user who never ran the finder does not get a setting they cannot use.
+ */
+fun migratePedalInterpolation(
+    dashboards: List<DashboardConfig>,
+    legacyEnabled: Boolean?,
+    hasCalibration: Boolean,
+): List<DashboardConfig> {
+    if (legacyEnabled != true || !hasCalibration) return dashboards
+    return dashboards.map { it.copy(pedalInterpolation = true) }
 }
 
 /**
@@ -158,6 +228,11 @@ data class DashboardConfig(
     val automatic: Boolean = false,
     /** Show the two large gauges and mini stats at the top. */
     val showGauges: Boolean = true,
+    /**
+     * Rescale a pedal/throttle channel to 0–100 % on this dashboard. Only has an effect when the
+     * pedal finder has stored a calibration for the current car.
+     */
+    val pedalInterpolation: Boolean = false,
 ) {
     fun resolvePids(supported: Set<Int>): List<Int> =
         if (automatic) recommendedDashboardPids(supported) else pids

@@ -1,12 +1,12 @@
 # CarStalker Privacy Policy
 
-**Effective date:** 23 November 2026
+**Effective date:** 26 November 2026
 **App:** CarStalker (`com.carstalker.app`)
 **Status:** Beta
 
 CarStalker is an OBD-II diagnostic app for Android. This policy explains what the app does with your data.
 
-> **Hosting note:** publish this file at a public URL (for example GitHub Pages or your own site) and use that URL in Google Play Console. The same text is bundled in the app under **Settings → About → Privacy policy**.
+> **Published at:** <https://clifarr.github.io/carstalker/privacy-policy.html>. Use that URL in Google Play Console. The same text is bundled in the app under **Settings → About → Privacy policy**.
 
 ## Summary
 
@@ -22,7 +22,8 @@ CarStalker stores the following in its private app storage:
 - the last vehicle identity read from the car, including the VIN;
 - drive recordings (CSV) and diagnostic reports (PDF) you create;
 - custom PID definitions;
-- guided diagnostic results and saved baselines.
+- guided diagnostic results and saved baselines;
+- a local diagnostic report you choose to share, which excludes the VIN, location and account data.
 
 This data is not uploaded anywhere by CarStalker. Android's app sandbox protects it, and CarStalker disables cloud backup and device-to-device transfer for its data.
 

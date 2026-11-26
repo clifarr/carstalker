@@ -6,6 +6,7 @@ import com.carstalker.app.data.DefaultDashboardConfig
 import com.carstalker.app.data.LiveKeys
 import com.carstalker.app.data.VehicleProfileEntry
 import com.carstalker.app.data.blankDashboard
+import com.carstalker.app.data.migratePedalInterpolation
 import com.carstalker.core.guided.Aspiration
 import com.carstalker.core.guided.FuelType
 import kotlinx.serialization.encodeToString
@@ -60,6 +61,38 @@ class DashboardConfigTest {
         val encoded = Json.encodeToString(mapOf("VIN" to entry))
         val decoded = Json.decodeFromString<Map<String, VehicleProfileEntry>>(encoded)
         assertEquals(entry, decoded["VIN"])
+    }
+
+    @Test
+    fun `pedal interpolation is per dashboard and off by default`() {
+        val dashboard = DashboardConfig(id = "plain", name = "Plain")
+        assertFalse(dashboard.pedalInterpolation)
+
+        val encoded = Json.encodeToString(dashboard.copy(pedalInterpolation = true))
+        val decoded = Json.decodeFromString<DashboardConfig>(encoded)
+        assertTrue(decoded.pedalInterpolation)
+    }
+
+    @Test
+    fun `legacy global pedal switch migrates only when a calibration exists`() {
+        val dashboards = listOf(DefaultDashboardConfig, blankDashboard("blank", "Blank"))
+
+        assertTrue(
+            migratePedalInterpolation(dashboards, legacyEnabled = true, hasCalibration = true)
+                .all { it.pedalInterpolation },
+        )
+        assertFalse(
+            migratePedalInterpolation(dashboards, legacyEnabled = true, hasCalibration = false)
+                .any { it.pedalInterpolation },
+        )
+        assertFalse(
+            migratePedalInterpolation(dashboards, legacyEnabled = false, hasCalibration = true)
+                .any { it.pedalInterpolation },
+        )
+        assertFalse(
+            migratePedalInterpolation(dashboards, legacyEnabled = null, hasCalibration = true)
+                .any { it.pedalInterpolation },
+        )
     }
 
     @Test

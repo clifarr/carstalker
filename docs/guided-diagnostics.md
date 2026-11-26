@@ -54,7 +54,19 @@ longer considered valid. A disconnected adapter therefore pauses the stage inste
 last value forever.
 
 Safety rules live in `SafetyRules` on each definition: flashing MIL, misfire codes, coolant and RPM
-limits, and voltage limits. A safety stop is a result, not an exception.
+limits, and voltage limits. A safety stop is a result, not an exception. RPM, coolant and voltage are
+sampled independently of the stage's analytics channels, and their readings must be fresh (4 s) for
+the gate to pass. A missing or stale safety signal pauses the stage with an explicit reason; it never
+counts as a passed check. If the vehicle does not advertise a safety signal, the result lists it as
+unverified instead of assuming it is safe. Key-on-engine-off stages do not require engine speed.
+
+Stage outcomes are conservative:
+
+- `VALID` — the target duration was reached with an adequate sample count.
+- `PARTIAL` — the user finished early or the capture was shorter than the target.
+- `INSUFFICIENT_QUALITY` — too few samples or too short a capture.
+- `NOT_EXERCISED` — the required stimulus (throttle, RPM or load change) was not observed.
+- `SKIPPED` / `INTERRUPTED` — the stage was skipped or lost its condition.
 
 ## Adding a definition
 

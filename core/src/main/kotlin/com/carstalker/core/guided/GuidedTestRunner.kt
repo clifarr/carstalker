@@ -41,6 +41,7 @@ class GuidedTestRunner(
     private var interruptions = 0
     private var stageMessage = ""
     private var safetyStopReason: String? = null
+    private var lastSafetyCheck = SafetyCheck()
     private var userPaused = false
 
     val runState: GuidedRunState get() = state
@@ -50,6 +51,35 @@ class GuidedTestRunner(
     val cancelled: Boolean get() = state == GuidedRunState.CANCELLED
     val skippedStages: List<String> get() = skipped.toList()
     val completedCaptures: List<StageCapture> get() = captures.toList()
+
+    /**
+     * Safety signals whose limits cannot be checked because the vehicle does not advertise them.
+     * Generic OBD cannot prove these are safe, so results must say so instead of implying a pass.
+     */
+    val unverifiedSafetySignals: List<String>
+        get() = buildList {
+            if (!capabilities.supports(Signals.RPM)) add(Signals.label(Signals.RPM))
+            if (!capabilities.supports(Signals.COOLANT)) add(Signals.label(Signals.COOLANT))
+            if (!capabilities.supports(Signals.CONTROL_MODULE_VOLTAGE) && !capabilities.adapterVoltageAvailable) {
+                add("Voltage")
+            }
+        }
+
+    /** Safety signals that must be sampled on every cycle, independent of the stage's analytics. */
+    private fun safetySignals(stage: StageDefinition? = currentStage): List<Int> {
+        val engineOff = stage?.condition?.requireEngineOff == true
+        return buildList {
+            // With the engine off there is no RPM to verify; requiring a fresh value would block
+            // key-on stages on cars that only report engine speed while running.
+            if (!engineOff) add(Signals.RPM)
+            add(Signals.COOLANT)
+            if (capabilities.supports(Signals.CONTROL_MODULE_VOLTAGE)) {
+                add(Signals.CONTROL_MODULE_VOLTAGE)
+            } else {
+                add(Signals.ADAPTER_VOLTAGE)
+            }
+        }.filter { it == Signals.ADAPTER_VOLTAGE || capabilities.supports(it) }.distinct()
+    }
 
     fun start(now: Long) {
         if (state != GuidedRunState.NOT_STARTED) return
@@ -84,14 +114,32 @@ class GuidedTestRunner(
         if (state.terminal) return
         if (state == GuidedRunState.NOT_STARTED) return
 
-        checkSafety()?.let {
-            safetyStop(it)
+        if (state == GuidedRunState.ANALYSING) {
+            // Capture is over; stale safety telemetry must not delay the result.
+            state = GuidedRunState.COMPLETE
             return
         }
 
-        if (state == GuidedRunState.ANALYSING) {
-            state = GuidedRunState.COMPLETE
-            return
+        checkSafety(now).let { safety ->
+            lastSafetyCheck = safety
+            when (safety.status) {
+                SafetyStatus.UNSAFE -> {
+                    safetyStop(safety.reason ?: "A safety limit was exceeded.")
+                    return
+                }
+                SafetyStatus.UNAVAILABLE -> {
+                    // Missing or stale safety data must never count as a passed check. Capture
+                    // cannot start, and an active segment is paused rather than trusted.
+                    val reason = safety.reason ?: "Waiting for fresh safety data."
+                    if (state == GuidedRunState.CAPTURING || state == GuidedRunState.SETTLING) {
+                        pauseForSafetyLoss(reason)
+                    } else if (!userPaused) {
+                        stageMessage = reason
+                    }
+                    return
+                }
+                SafetyStatus.OK -> Unit
+            }
         }
 
         if (userPaused) {
@@ -146,11 +194,13 @@ class GuidedTestRunner(
                     }
                 } else {
                     lastSatisfiedAt = now
-                    if (shouldComplete(stage, now)) {
-                        completeStage(stage, now, completed = true)
-                    } else {
-                        val elapsed = now - (captureStartedAt ?: now)
-                        stageMessage = "Capturing live data: ${(elapsed / 1000).coerceAtLeast(0)} of ${stage.condition.captureMs / 1000} seconds."
+                    when (completionFor(stage, now)) {
+                        Completion.DURATION -> completeStage(stage, now, completed = true)
+                        Completion.PLATEAU -> completeStage(stage, now, completed = true, plateau = true)
+                        null -> {
+                            val elapsed = now - (captureStartedAt ?: now)
+                            stageMessage = "Capturing live data: ${(elapsed / 1000).coerceAtLeast(0)} of ${stage.condition.captureMs / 1000} seconds."
+                        }
                     }
                 }
             }
@@ -284,12 +334,20 @@ class GuidedTestRunner(
             markerCount = currentMarkers.size,
             invalidatedMarkerCount = markerHistory.count { it.state == SymptomMarkerState.INVALIDATED },
             message = stageMessage,
+            safetyStatus = lastSafetyCheck.status,
+            safetyMessage = lastSafetyCheck.reason,
+            unverifiedSafetySignals = unverifiedSafetySignals,
         )
     }
 
+    /**
+     * Everything the poll loop must read this cycle: the stage's analytics channels plus the
+     * safety channels, which are never left to the stage definition or the dashboard.
+     */
     fun pidsToSample(): List<Int> {
         val stage = currentStage ?: return emptyList()
-        return stage.pids.filter { capabilities.supports(it) }.distinct()
+        val analytics = stage.pids.filter { capabilities.supports(it) }
+        return (analytics + safetySignals(stage)).distinct()
     }
 
     fun captureDataForCurrentStage(now: Long): CaptureData = buildCapture(now)
@@ -342,30 +400,60 @@ class GuidedTestRunner(
         }
     }
 
-    private fun shouldComplete(stage: StageDefinition, now: Long): Boolean {
-        val started = captureStartedAt ?: return false
-        if (now - started >= stage.condition.captureMs) return true
-        if (!stage.condition.completeOnCoolantPlateau) return false
+    /**
+     * A safety signal went missing or stale mid-stage. The segment is discarded because the app
+     * can no longer show that the test stayed inside its limits.
+     */
+    private fun pauseForSafetyLoss(reason: String) {
+        interruptions++
+        state = GuidedRunState.PAUSED
+        invalidateCurrentMarkers("Safety data was unavailable; the partial segment was discarded.")
+        currentPoints.clear()
+        captureStartedAt = null
+        conditionMetAt = null
+        lastSatisfiedAt = null
+        stageMessage = "Paused: $reason The stage will restart once safety data is fresh again."
+    }
+
+    private enum class Completion { DURATION, PLATEAU }
+
+    private fun completionFor(stage: StageDefinition, now: Long): Completion? {
+        val started = captureStartedAt ?: return null
+        if (now - started >= stage.condition.captureMs) return Completion.DURATION
+        if (!stage.condition.completeOnCoolantPlateau) return null
         // A plateau must be observed, not assumed: require a minimum window and sample count.
-        if (now - started < MIN_PLATEAU_CAPTURE_MS) return false
+        if (now - started < MIN_PLATEAU_CAPTURE_MS) return null
         val coolant = seriesWithin(Signals.COOLANT, now - stage.condition.plateauWindowMs)
-        if (coolant.size < MIN_PLATEAU_SAMPLES) return false
+        if (coolant.size < MIN_PLATEAU_SAMPLES) return null
         val last = coolant.last().value
-        if (last < stage.condition.plateauCoolantC) return false
+        if (last < stage.condition.plateauCoolantC) return null
         val spread = coolant.maxOf { it.value } - coolant.minOf { it.value }
-        return spread <= stage.condition.plateauToleranceC
+        return if (spread <= stage.condition.plateauToleranceC) Completion.PLATEAU else null
     }
 
     private fun completeStage(
         stage: StageDefinition,
         now: Long,
         completed: Boolean,
+        plateau: Boolean = false,
         note: String? = null,
     ) {
         val capture = buildCapture(now)
+        val outcome = outcomeFor(stage, capture, completed, plateau)
         val notes = buildList {
             note?.let { add(it) }
             if (interruptions > 0) add("$interruptions interruption(s); mixed samples were discarded.")
+            if (!completed) {
+                add(
+                    "Finished early: ${formatSeconds(capture.durationMs)} of the " +
+                        "${formatSeconds(stage.condition.captureMs)} target captured.",
+                )
+            }
+            if (outcome == StageOutcome.INSUFFICIENT_QUALITY) {
+                add("Too few samples or too short a capture to treat this stage as evidence.")
+            } else if (outcome == StageOutcome.PARTIAL) {
+                add("Partial evidence: this stage is not counted as a complete capture.")
+            }
         }
         captures += StageCapture(
             stageId = stage.id,
@@ -374,18 +462,56 @@ class GuidedTestRunner(
             capture = capture,
             interruptions = interruptions,
             completed = completed,
-            outcome = when {
-                capture.points.isEmpty() -> StageOutcome.INSUFFICIENT_QUALITY
-                completed -> StageOutcome.VALID
-                else -> StageOutcome.VALID
-            },
+            outcome = outcome,
             notes = notes,
             markerEvents = markerHistory.toList(),
         )
-        stageMessage = if (completed) "${stage.title} complete." else "${stage.title} finished."
+        stageMessage = when (outcome) {
+            StageOutcome.VALID -> "${stage.title} complete."
+            StageOutcome.PARTIAL -> "${stage.title} finished with partial data."
+            else -> "${stage.title} did not capture enough usable data."
+        }
         state = GuidedRunState.STAGE_COMPLETE
         advanceStage(now)
     }
+
+    /**
+     * Capture validity is deliberately conservative: a short or sparse capture cannot become
+     * valid evidence just because it contains one sample.
+     */
+    private fun outcomeFor(
+        stage: StageDefinition,
+        capture: CaptureData,
+        completed: Boolean,
+        plateau: Boolean,
+    ): StageOutcome {
+        if (capture.points.isEmpty()) return StageOutcome.INSUFFICIENT_QUALITY
+        val requiredMs = stage.condition.captureMs
+        val duration = capture.durationMs
+        val keyPid = primarySignal(stage)
+        val samples = keyPid
+            ?.let { capture.sampleCount(it) }
+            ?.takeIf { it > 0 }
+            ?: capture.points.size
+        val minSamples = (requiredMs / 1000.0 * MIN_SAMPLES_PER_SECOND).toInt()
+            .coerceAtLeast(MIN_STAGE_SAMPLES)
+        if (samples < minSamples) return StageOutcome.INSUFFICIENT_QUALITY
+        if (plateau) {
+            return if (duration >= MIN_PLATEAU_CAPTURE_MS && samples >= MIN_PLATEAU_SAMPLES) {
+                StageOutcome.VALID
+            } else {
+                StageOutcome.PARTIAL
+            }
+        }
+        val enoughDuration = duration >= (requiredMs * MIN_VALID_FRACTION).toLong()
+        return when {
+            completed && enoughDuration -> StageOutcome.VALID
+            duration >= requiredMs / 2 -> StageOutcome.PARTIAL
+            else -> StageOutcome.INSUFFICIENT_QUALITY
+        }
+    }
+
+    private fun formatSeconds(ms: Long): String = "${(ms / 1000).coerceAtLeast(0)} s"
 
     private fun advanceStage(now: Long) {
         stageIndex++
@@ -422,19 +548,7 @@ class GuidedTestRunner(
 
     private fun evaluate(stage: StageDefinition, now: Long): ConditionFeedback {
         val condition = stage.condition
-        val primaryPid = when (condition.kind) {
-            StageKind.COLD_START_WARMUP -> Signals.COOLANT
-            StageKind.CRANKING, StageKind.PASSIVE_CAPTURE -> Signals.RPM
-            StageKind.KEY_ON_ENGINE_OFF -> when {
-                lastSampleAt.containsKey(Signals.MAP) -> Signals.MAP
-                lastSampleAt.containsKey(Signals.CONTROL_MODULE_VOLTAGE) -> Signals.CONTROL_MODULE_VOLTAGE
-                lastSampleAt.containsKey(Signals.ADAPTER_VOLTAGE) -> Signals.ADAPTER_VOLTAGE
-                stage.pids.contains(Signals.MAP) -> Signals.MAP
-                stage.pids.contains(Signals.CONTROL_MODULE_VOLTAGE) -> Signals.CONTROL_MODULE_VOLTAGE
-                else -> Signals.ADAPTER_VOLTAGE
-            }
-            else -> Signals.RPM
-        }
+        val primaryPid = primarySignal(stage)
         val lastSeen = lastSampleAt[primaryPid]
         if (lastSeen == null || now - lastSeen > STALE_AFTER_MS) {
             return ConditionFeedback(
@@ -689,24 +803,89 @@ class GuidedTestRunner(
         )
     }
 
-    private fun checkSafety(): String? {
+    /** The signal that proves a stage's condition is live and usable as its evidence key. */
+    private fun primarySignal(stage: StageDefinition): Int = when (stage.condition.kind) {
+        StageKind.COLD_START_WARMUP -> Signals.COOLANT
+        StageKind.CRANKING, StageKind.PASSIVE_CAPTURE -> Signals.RPM
+        StageKind.KEY_ON_ENGINE_OFF -> when {
+            lastSampleAt.containsKey(Signals.MAP) -> Signals.MAP
+            lastSampleAt.containsKey(Signals.CONTROL_MODULE_VOLTAGE) -> Signals.CONTROL_MODULE_VOLTAGE
+            lastSampleAt.containsKey(Signals.ADAPTER_VOLTAGE) -> Signals.ADAPTER_VOLTAGE
+            stage.pids.contains(Signals.MAP) -> Signals.MAP
+            stage.pids.contains(Signals.CONTROL_MODULE_VOLTAGE) -> Signals.CONTROL_MODULE_VOLTAGE
+            else -> Signals.ADAPTER_VOLTAGE
+        }
+        else -> Signals.RPM
+    }
+
+    /** A value that is still recent enough to describe the engine right now, or null. */
+    private fun freshSignal(pid: Int, now: Long): Double? {
+        val last = lastSampleAt[pid] ?: return null
+        if (now - last > SAFETY_STALE_AFTER_MS) return null
+        return live[pid]
+    }
+
+    private fun checkSafety(now: Long): SafetyCheck {
         val rules = definition.safety
-        val coolant = live[Signals.COOLANT]
+        val required = safetySignals().toSet()
+        val coolant = freshSignal(Signals.COOLANT, now)
+        val rpm = freshSignal(Signals.RPM, now)
+        val voltage = freshSignal(Signals.CONTROL_MODULE_VOLTAGE, now)
+            ?: freshSignal(Signals.ADAPTER_VOLTAGE, now)
+
+        // Freshness first: a stale-but-plausible reading must not pass a gate, and a stale
+        // out-of-range reading is not proof of danger either.
+        if (Signals.COOLANT in required && coolant == null) {
+            return SafetyCheck(
+                SafetyStatus.UNAVAILABLE,
+                "Waiting for a fresh coolant temperature reading.",
+                Signals.COOLANT,
+            )
+        }
+        if (Signals.RPM in required && rpm == null) {
+            return SafetyCheck(
+                SafetyStatus.UNAVAILABLE,
+                "Waiting for a fresh engine speed reading.",
+                Signals.RPM,
+            )
+        }
+        if (voltage == null) {
+            return SafetyCheck(
+                SafetyStatus.UNAVAILABLE,
+                "Waiting for a fresh voltage reading.",
+                Signals.CONTROL_MODULE_VOLTAGE,
+            )
+        }
+
         if (coolant != null && coolant > rules.maxCoolantC) {
-            return "Coolant reached ${format(coolant)} °C. Stop the test and let the engine cool."
+            return SafetyCheck(
+                SafetyStatus.UNSAFE,
+                "Coolant reached ${format(coolant)} °C. Stop the test and let the engine cool.",
+                Signals.COOLANT,
+            )
         }
-        val rpm = live[Signals.RPM]
         if (rpm != null && rpm > rules.maxRpm) {
-            return "Engine speed reached ${format(rpm)} rpm, above the ${rules.maxRpm} rpm test limit."
+            return SafetyCheck(
+                SafetyStatus.UNSAFE,
+                "Engine speed reached ${format(rpm)} rpm, above the ${rules.maxRpm} rpm test limit.",
+                Signals.RPM,
+            )
         }
-        val voltage = live[Signals.CONTROL_MODULE_VOLTAGE] ?: live[Signals.ADAPTER_VOLTAGE]
-        if (voltage != null && voltage < rules.minVoltage) {
-            return "Voltage dropped to ${format(voltage)} V. Stop and check the charging system and connections."
+        if (voltage < rules.minVoltage) {
+            return SafetyCheck(
+                SafetyStatus.UNSAFE,
+                "Voltage dropped to ${format(voltage)} V. Stop and check the charging system and connections.",
+                Signals.CONTROL_MODULE_VOLTAGE,
+            )
         }
-        if (voltage != null && voltage > rules.maxVoltage) {
-            return "Voltage reached ${format(voltage)} V. Stop and have the charging system checked."
+        if (voltage > rules.maxVoltage) {
+            return SafetyCheck(
+                SafetyStatus.UNSAFE,
+                "Voltage reached ${format(voltage)} V. Stop and have the charging system checked.",
+                Signals.CONTROL_MODULE_VOLTAGE,
+            )
         }
-        return null
+        return SafetyCheck(SafetyStatus.OK)
     }
 
     private fun initialSafetyStop(): String? {
@@ -764,7 +943,11 @@ class GuidedTestRunner(
 
     private companion object {
         const val STALE_AFTER_MS = 2_500L
+        const val SAFETY_STALE_AFTER_MS = 4_000L
         const val MIN_PLATEAU_CAPTURE_MS = 60_000L
         const val MIN_PLATEAU_SAMPLES = 20
+        const val MIN_STAGE_SAMPLES = 5
+        const val MIN_SAMPLES_PER_SECOND = 1.0
+        const val MIN_VALID_FRACTION = 0.9
     }
 }

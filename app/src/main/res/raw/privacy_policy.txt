@@ -1,6 +1,6 @@
 CarStalker Privacy Policy
 
-Effective date: 23 November 2026
+Effective date: 26 November 2026
 App: CarStalker (com.carstalker.app)
 Status: Beta
 
@@ -17,7 +17,8 @@ CarStalker stores the following in its private app storage:
 - the last vehicle identity read from the car, including the VIN;
 - drive recordings (CSV) and diagnostic reports (PDF) you create;
 - custom PID definitions;
-- guided diagnostic results and saved baselines.
+- guided diagnostic results and saved baselines;
+- a local diagnostic report you choose to share, which excludes the VIN, location and account data.
 This data is not uploaded anywhere by CarStalker.
 
 PERMISSIONS AND WHY THEY ARE NEEDED

@@ -80,12 +80,12 @@ data class AppSettings(
     val baselineJson: String? = null,
     /** Per-vehicle engine profile, keyed by VIN or a stable demo/unknown key. */
     val vehicleProfiles: Map<String, VehicleProfileEntry> = emptyMap(),
+    /** One-time repair of the simulated demo car's profile after the old global fallback. */
+    val demoProfileSanitized: Boolean = false,
     val profileVehicleKey: String = "unknown",
     val includeVinInReports: Boolean = false,
     /** Pedal/throttle channels rescaled from the finder's released and pressed readings. */
     val pedalCalibrations: List<PedalCalibration> = emptyList(),
-    /** Rescale calibrated pedal channels to 0–100 %. Enabled by default. */
-    val pedalCalibrationEnabled: Boolean = true,
 ) {
     val activeDashboard: DashboardConfig
         get() = dashboards.firstOrNull { it.id == activeDashboardId }
@@ -127,10 +127,14 @@ class SettingsRepository(private val context: Context) {
         val aspiration = stringPreferencesKey("aspiration")
         val baselineJson = stringPreferencesKey("baseline_json")
         val vehicleProfiles = stringPreferencesKey("vehicle_profiles")
+        val demoProfileSanitized = booleanPreferencesKey("demo_profile_sanitized")
         val profileVehicleKey = stringPreferencesKey("profile_vehicle_key")
         val includeVinInReports = booleanPreferencesKey("include_vin_in_reports")
         val pedalCalibrations = stringPreferencesKey("pedal_calibrations")
-        val pedalCalibrationEnabled = booleanPreferencesKey("pedal_calibration_enabled")
+        /** Legacy global switch; migrated into [DashboardConfig.pedalInterpolation]. */
+        val legacyPedalCalibrationEnabled = booleanPreferencesKey("pedal_calibration_enabled")
+        /** Set after the legacy switch has been folded into the per-dashboard flags. */
+        val pedalInterpolationMigrated = booleanPreferencesKey("pedal_interpolation_migrated")
     }
 
     val settings: Flow<AppSettings> = context.settingsStore.data.map { it.toSettings() }
@@ -152,6 +156,9 @@ class SettingsRepository(private val context: Context) {
             ?: (legacyPids == null ||
                 legacyPids == LegacyDefaultDashboardPids ||
                 legacyPids == DefaultDashboardPids)
+        val pedalCalibrations = this[Keys.pedalCalibrations]
+            ?.let { runCatching { json.decodeFromString<List<PedalCalibration>>(it) }.getOrNull() }
+            ?: emptyList()
         val dashboards = this[Keys.dashboards]
             ?.let { runCatching { json.decodeFromString<List<DashboardConfig>>(it) }.getOrNull() }
             ?.takeIf { it.isNotEmpty() }
@@ -161,9 +168,21 @@ class SettingsRepository(private val context: Context) {
                     automatic = legacyAuto,
                 ),
             )
+        // The old switch was global. Preserve its behaviour for existing installs by enabling
+        // interpolation on every dashboard only when the user had it on and a calibration exists.
+        // Once written, the marker stops re-applying the migration over later per-dashboard choices.
+        val migratedDashboards = if (this[Keys.pedalInterpolationMigrated] == true) {
+            dashboards
+        } else {
+            migratePedalInterpolation(
+                dashboards = dashboards,
+                legacyEnabled = this[Keys.legacyPedalCalibrationEnabled],
+                hasCalibration = pedalCalibrations.isNotEmpty(),
+            )
+        }
         val activeDashboardId = this[Keys.activeDashboardId]
-            ?.takeIf { id -> dashboards.any { it.id == id } }
-            ?: dashboards.first().id
+            ?.takeIf { id -> migratedDashboards.any { it.id == id } }
+            ?: migratedDashboards.first().id
 
         return AppSettings(
             unitSystem = this[Keys.unitSystem]
@@ -177,7 +196,7 @@ class SettingsRepository(private val context: Context) {
             tcpHost = this[Keys.tcpHost] ?: "192.168.0.10",
             tcpPort = this[Keys.tcpPort] ?: 35000,
             usbBaud = this[Keys.usbBaud] ?: 38400,
-            dashboards = dashboards,
+            dashboards = migratedDashboards,
             activeDashboardId = activeDashboardId,
             customPids = this[Keys.customPids]
                 ?.let { runCatching { json.decodeFromString<List<CustomPid>>(it) }.getOrNull() }
@@ -192,12 +211,10 @@ class SettingsRepository(private val context: Context) {
             vehicleProfiles = this[Keys.vehicleProfiles]
                 ?.let { runCatching { json.decodeFromString<Map<String, VehicleProfileEntry>>(it) }.getOrNull() }
                 ?: emptyMap(),
+            demoProfileSanitized = this[Keys.demoProfileSanitized] ?: false,
             profileVehicleKey = this[Keys.profileVehicleKey] ?: "unknown",
             includeVinInReports = this[Keys.includeVinInReports] ?: false,
-            pedalCalibrations = this[Keys.pedalCalibrations]
-                ?.let { runCatching { json.decodeFromString<List<PedalCalibration>>(it) }.getOrNull() }
-                ?: emptyList(),
-            pedalCalibrationEnabled = this[Keys.pedalCalibrationEnabled] ?: true,
+            pedalCalibrations = pedalCalibrations,
         )
     }
 
@@ -213,7 +230,11 @@ class SettingsRepository(private val context: Context) {
         this[Keys.dashboards] = json.encodeToString(settings.dashboards)
         this[Keys.activeDashboardId] = settings.activeDashboardId
         this[Keys.customPids] = json.encodeToString(settings.customPids)
-        settings.lastVin?.let { this[Keys.lastVin] = it }
+        if (settings.lastVin != null) {
+            this[Keys.lastVin] = settings.lastVin!!
+        } else {
+            remove(Keys.lastVin)
+        }
         this[Keys.shopName] = settings.shopName
         this[Keys.fuelType] = settings.fuelType.name
         this[Keys.aspiration] = settings.aspiration.name
@@ -223,9 +244,13 @@ class SettingsRepository(private val context: Context) {
             remove(Keys.baselineJson)
         }
         this[Keys.vehicleProfiles] = json.encodeToString(settings.vehicleProfiles)
+        this[Keys.demoProfileSanitized] = settings.demoProfileSanitized
         this[Keys.profileVehicleKey] = settings.profileVehicleKey
         this[Keys.includeVinInReports] = settings.includeVinInReports
         this[Keys.pedalCalibrations] = json.encodeToString(settings.pedalCalibrations)
-        this[Keys.pedalCalibrationEnabled] = settings.pedalCalibrationEnabled
+        // The global switch was replaced by a per-dashboard setting. Persist the migration marker
+        // and drop the legacy key so later reads do not overwrite the user's per-dashboard choices.
+        this[Keys.pedalInterpolationMigrated] = true
+        remove(Keys.legacyPedalCalibrationEnabled)
     }
 }

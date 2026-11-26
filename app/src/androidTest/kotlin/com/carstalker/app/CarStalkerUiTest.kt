@@ -42,10 +42,29 @@ class CarStalkerUiTest {
                 )
             }
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // The app asks for this the first time a recording starts; a dialog would hide the
+            // dashboard and make the smoke test flaky.
+            runCatching {
+                instrumentation.uiAutomation.grantRuntimePermission(
+                    context.packageName,
+                    Manifest.permission.POST_NOTIFICATIONS,
+                )
+            }
+        }
         context.startActivity(
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                // Recreate the activity on the connect screen and drop any adapter session left
+                // behind by an earlier test in the same process.
+                .putExtra("route", "connect")
+                .putExtra("action", "disconnect"),
         )
         assertTrue("Connect screen did not appear", waitFor("CarStalker", 15_000))
+        assertTrue(
+            "A previous adapter session was not disconnected",
+            waitFor("Connect an OBD-II adapter", 10_000),
+        )
     }
 
     @Test

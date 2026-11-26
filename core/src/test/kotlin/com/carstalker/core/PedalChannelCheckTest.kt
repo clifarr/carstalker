@@ -36,6 +36,21 @@ class PedalChannelCheckTest {
     }
 
     @Test
+    fun `both pedal and throttle are recommended when both move`() {
+        val result = PedalChannelCheck.analyze(
+            capture(
+                0x11 to listOf(10.0, 40.0, 70.0),
+                0x49 to listOf(0.0, 50.0, 90.0),
+            ),
+        )
+
+        assertEquals(listOf(0x49, 0x11), result.recommended)
+        assertEquals(0x49, result.recommendedPedal)
+        assertEquals(0x11, result.recommendedThrottle)
+        assertTrue(result.summary.contains("both", ignoreCase = true))
+    }
+
+    @Test
     fun `a car that only reports the throttle plate recommends that channel`() {
         val result = PedalChannelCheck.analyze(
             capture(
@@ -104,6 +119,20 @@ class PedalChannelCheckTest {
 
 class PedalDashboardApplyTest {
 
+    private val bothMoved = PedalChannelCheck.analyze(
+        CaptureData(
+            points = listOf(
+                CapturePoint(0x11, 0L, 10.0),
+                CapturePoint(0x11, 100L, 60.0),
+                CapturePoint(0x49, 0L, 0.0),
+                CapturePoint(0x49, 100L, 90.0),
+            ),
+            requestedPids = listOf(0x11, 0x49),
+            startedAt = 0L,
+            endedAt = 100L,
+        ),
+    )
+
     private val honda = PedalChannelCheck.analyze(
         CaptureData(
             points = listOf(
@@ -154,6 +183,48 @@ class PedalDashboardApplyTest {
             listOf(0x49, 2, 3, 4, 5, 6, 7, 8, 9, 10),
             PedalChannelCheck.applyToDashboard(base, 0x49, replacePid = 1, max = 10),
         )
+    }
+
+    @Test
+    fun `both recommendations are added without duplicating`() {
+        val update = PedalChannelCheck.applyRecommendations(
+            base = listOf(0x0C, 0x0D),
+            pids = listOf(0x49, 0x11),
+            result = bothMoved,
+            max = 10,
+        )
+
+        assertEquals(listOf(0x0C, 0x0D, 0x49, 0x11), update.pids)
+        assertEquals(listOf(0x49, 0x11), update.added)
+        assertTrue(update.replaced.isEmpty())
+        assertTrue(update.skipped.isEmpty())
+    }
+
+    @Test
+    fun `both recommendations replace a static throttle plate`() {
+        val update = PedalChannelCheck.applyRecommendations(
+            base = listOf(0x0C, 0x45, 0x0D),
+            pids = listOf(0x49, 0x11),
+            result = bothMoved,
+            max = 10,
+        )
+
+        assertEquals(listOf(0x0C, 0x49, 0x0D, 0x11), update.pids)
+        assertEquals(listOf(0x49, 0x11), update.added)
+        assertEquals(listOf(0x45), update.replaced)
+    }
+
+    @Test
+    fun `a full dashboard reports both recommendations as skipped`() {
+        val update = PedalChannelCheck.applyRecommendations(
+            base = (1..10).toList(),
+            pids = listOf(0x49, 0x11),
+            result = bothMoved,
+            max = 10,
+        )
+
+        assertTrue(update.added.isEmpty())
+        assertEquals(listOf(0x49, 0x11), update.skipped)
     }
 
     @Test

@@ -1,30 +1,22 @@
 package com.carstalker.app.ui.components
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -33,143 +25,85 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.carstalker.app.data.AdapterVoltageParam
+import com.carstalker.app.data.CustomPid
 import com.carstalker.app.data.DEFAULT_DASHBOARD_SIZE
 import com.carstalker.app.data.DashboardParams
 import com.carstalker.app.data.toPid
 import com.carstalker.app.ui.theme.LocalStalkerColors
 import com.carstalker.core.obd.Pid
+import com.carstalker.core.obd.PidCatalog
+import com.carstalker.core.util.Hex
 import java.util.Locale
 
 /**
  * Full-height parameter picker.
  *
- * The list scrolls freely; only the small drag handle at the top dismisses the sheet,
- * so scrolling can never collapse it.
+ * Uses the same ModalBottomSheet inset handling as the Replace list, so the last row stays
+ * above the system navigation bar in portrait and landscape without a fixed empty gap.
  */
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PidPickerSheet(
     pinned: List<Int>,
     supported: Set<Int>,
+    otherSupported: List<Int>,
     automatic: Boolean,
     dashboardName: String,
     maxPids: Int,
-    customPids: List<com.carstalker.app.data.CustomPid>,
+    customPids: List<CustomPid>,
+    calibratedPids: Set<Int> = emptySet(),
     onToggle: (Int) -> Unit,
     onUseRecommended: () -> Unit,
     onFindPedalChannels: () -> Unit,
+    onAddCustomPid: (CustomPid) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val stalker = LocalStalkerColors.current
-    val density = LocalDensity.current
-    val scope = rememberCoroutineScope()
+    var addingPid by remember { mutableStateOf<Int?>(null) }
     val atLimit = pinned.size >= maxPids
     val groups = remember {
         val byCategory = DashboardParams.groupBy { it.category }
         CategoryOrder.mapNotNull { category -> byCategory[category]?.let { category to it } }
     }
 
-    // Live drag offset: the sheet follows the finger and springs back if released early.
-    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    Dialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false),
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        // Let the sheet surface fill the navigation-bar area with the app theme colour;
+        // the content is inset separately so it stays above the system bar.
+        contentWindowInsets = { WindowInsets(0) },
     ) {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val sheetHeightPx = with(density) { maxHeight.toPx() * 0.92f }
-            val dismissThresholdPx = with(density) { 72.dp.toPx() }
-            val progress = (dragOffset / sheetHeightPx).coerceIn(0f, 1f)
-
-            fun settle(target: Float, then: (() -> Unit)? = null) {
-                scope.launch {
-                    animate(
-                        initialValue = dragOffset,
-                        targetValue = target,
-                        animationSpec = if (target == 0f) {
-                            spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-                        } else {
-                            tween(durationMillis = 170)
-                        },
-                    ) { value, _ -> dragOffset = value }
-                    then?.invoke()
-                }
-            }
-
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.55f * (1f - progress)))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onDismiss,
-                    ),
-            )
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .fillMaxHeight(0.92f)
-                    .offset { IntOffset(0, dragOffset.roundToInt()) },
-                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-                color = MaterialTheme.colorScheme.surface,
-            ) {
-                Column(Modifier.statusBarsPadding()) {
-                    // Only this handle drags the sheet, so the list below scrolls freely.
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(34.dp)
-                            .draggable(
-                                orientation = Orientation.Vertical,
-                                state = rememberDraggableState { delta ->
-                                    dragOffset = (dragOffset + delta).coerceAtLeast(0f)
-                                },
-                                onDragStopped = { velocity ->
-                                    val flung = velocity > 1_200f
-                                    if (dragOffset > dismissThresholdPx || flung) {
-                                        settle(sheetHeightPx, onDismiss)
-                                    } else {
-                                        settle(0f)
-                                    }
-                                },
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Box(
-                            Modifier
-                                .width(44.dp)
-                                .height(4.dp)
-                                .background(MaterialTheme.colorScheme.outline, RoundedCornerShape(50)),
-                        )
-                    }
-
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                .navigationBarsPadding(),
+        ) {
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -239,6 +173,16 @@ fun PidPickerSheet(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = stalker.muted,
                             )
+                            if (calibratedPids.isNotEmpty()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "Calibrated for this car: " + calibratedPids
+                                        .mapNotNull { PidCatalog.find(it)?.shortName }
+                                        .joinToString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = stalker.accentSecondary,
+                                )
+                            }
                         }
                         IconButton(onClick = onDismiss) {
                             Icon(
@@ -255,6 +199,7 @@ fun PidPickerSheet(
                             .fillMaxWidth()
                             .weight(1f)
                             .padding(horizontal = 16.dp),
+                        contentPadding = PaddingValues(bottom = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
                         if (customPids.isNotEmpty()) {
@@ -307,7 +252,7 @@ fun PidPickerSheet(
                                     checked = pid.id in pinned,
                                     // Adapter measurements have no PID to check against.
                                     supported = pid.id < 0 || supported.isEmpty() || pid.id in supported,
-                                    badge = null,
+                                    badge = if (pid.id in calibratedPids) "CALIBRATED" else null,
                                     enabled = !atLimit || pid.id in pinned,
                                     onToggle = { onToggle(pid.id) },
                                 )
@@ -316,11 +261,28 @@ fun PidPickerSheet(
                                 Spacer(Modifier.height(8.dp))
                             }
                         }
-                        item { Spacer(Modifier.height(20.dp)) }
+                        if (otherSupported.isNotEmpty()) {
+                            item(key = "other-supported") {
+                                OtherSupportedPids(
+                                    ids = otherSupported,
+                                    onPickPid = { addingPid = it },
+                                )
+                            }
+                        }
                     }
                 }
-            }
         }
+
+    addingPid?.let { pid ->
+        CustomPidDialog(
+            initial = null,
+            presetPidHex = Hex.toHex(pid),
+            onDismiss = { addingPid = null },
+            onSave = { custom ->
+                onAddCustomPid(custom)
+                addingPid = null
+            },
+        )
     }
 }
 
@@ -428,6 +390,73 @@ private fun PidPickRow(
             )
             Spacer(Modifier.width(6.dp))
         }
+    }
+}
+
+/**
+ * Standard Mode 01 parameters the car advertises but the app has no definition for. Tapping one
+ * opens the custom-PID dialog with the code fixed, so the value can still reach a dashboard once
+ * the user supplies its meaning and formula.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun OtherSupportedPids(ids: List<Int>, onPickPid: (Int) -> Unit) {
+    val stalker = LocalStalkerColors.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 8.dp, end = 8.dp, top = 18.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "OTHER SUPPORTED PIDS",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.accent,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "${ids.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = stalker.muted,
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (ids.size == 1) {
+                "Your car also reports this standard OBD-II parameter. CarStalker has no definition for it yet: tap it to add your own."
+            } else {
+                "Your car also reports these standard OBD-II parameters. CarStalker has no definitions for them yet: tap one to add your own."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = stalker.muted,
+        )
+        Spacer(Modifier.height(10.dp))
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            ids.forEach { id ->
+                Surface(
+                    onClick = { onPickPid(id) },
+                    shape = RoundedCornerShape(6.dp),
+                    color = stalker.accent.copy(alpha = 0.12f),
+                ) {
+                    Text(
+                        "0x${Hex.toHex(id)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = stalker.accent,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "A custom PID needs a formula from you: the app cannot guess what the value means.",
+            style = MaterialTheme.typography.labelSmall,
+            color = stalker.muted,
+        )
     }
 }
 

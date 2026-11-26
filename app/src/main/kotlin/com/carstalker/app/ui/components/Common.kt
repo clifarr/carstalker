@@ -25,8 +25,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwitchColors
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -35,15 +39,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import android.os.Build
+import android.view.View
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.carstalker.app.R
+import com.carstalker.app.ui.theme.LocalIsDarkTheme
 import com.carstalker.app.ui.theme.LocalStalkerColors
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 /** Small status capsule with an optional pulsing dot. */
 /** Respect the system "remove animations" accessibility setting. */
@@ -267,6 +279,79 @@ fun EmptyState(
             modifier = Modifier.padding(horizontal = 24.dp),
         )
     }
+}
+
+/**
+ * Material's ModalBottomSheet uses its own dialog window. On a light system theme that window
+ * keeps a light navigation-bar contrast scrim even when the app is forced dark, which leaves a
+ * pale strip under the sheet. Disable the scrim and let the sheet's surface colour reach the
+ * bottom edge.
+ */
+@Composable
+fun FollowAppThemeInDialogWindow() {
+    val view = LocalView.current
+    val dark = LocalIsDarkTheme.current
+    val surface = MaterialTheme.colorScheme.surface
+
+    fun apply() {
+        var current: View? = view
+        while (current != null && current !is DialogWindowProvider) {
+            current = current.parent as? View
+        }
+        val window = (current as? DialogWindowProvider)?.window ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+        // Some 3-button system taskbars ignore a transparent navigation bar and keep their
+        // own light background. Setting the sheet surface colour explicitly makes the bar
+        // follow the app theme where the platform still honours this value.
+        @Suppress("DEPRECATION")
+        window.navigationBarColor = surface.toArgb()
+        @Suppress("DEPRECATION")
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightNavigationBars = !dark
+            isAppearanceLightStatusBars = !dark
+        }
+    }
+
+    DisposableEffect(view, dark) {
+        apply()
+        onDispose { }
+    }
+    // Material3 sets the dialog window's bar appearance when it shows, after this content is
+    // first composed. Apply again once the sheet is on screen so a forced dark app does not
+    // keep light-navigation-bar (dark) icons on a dark sheet.
+    LaunchedEffect(view, dark) {
+        delay(100)
+        apply()
+    }
+}
+
+/**
+ * One switch style for the whole app. Material's default unchecked thumb and track resolve to
+ * nearly the same surface in this theme, which makes an off switch look like an empty pill.
+ * A lighter thumb, a distinct track and a visible border keep the control readable.
+ */
+@Composable
+fun stalkerSwitchColors(): SwitchColors {
+    val stalker = LocalStalkerColors.current
+    val scheme = MaterialTheme.colorScheme
+    return SwitchDefaults.colors(
+        checkedThumbColor = scheme.onPrimary,
+        checkedTrackColor = stalker.accent,
+        checkedBorderColor = stalker.accent,
+        uncheckedThumbColor = stalker.muted,
+        uncheckedTrackColor = scheme.surfaceContainerHighest,
+        uncheckedBorderColor = scheme.outline,
+        disabledCheckedThumbColor = scheme.onPrimary.copy(alpha = 0.5f),
+        disabledCheckedTrackColor = stalker.accent.copy(alpha = 0.35f),
+        disabledCheckedBorderColor = stalker.accent.copy(alpha = 0.35f),
+        disabledUncheckedThumbColor = stalker.muted.copy(alpha = 0.5f),
+        disabledUncheckedTrackColor = scheme.surfaceContainerHighest.copy(alpha = 0.5f),
+        disabledUncheckedBorderColor = scheme.outline.copy(alpha = 0.5f),
+    )
 }
 
 /**

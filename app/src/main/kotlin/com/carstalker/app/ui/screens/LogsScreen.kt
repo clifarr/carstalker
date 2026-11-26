@@ -205,9 +205,15 @@ fun LogsScreen(viewModel: CarStalkerViewModel) {
                                     )
                                     Spacer(Modifier.height(3.dp))
                                     Text(
-                                        "${formatDuration(session.durationMs)} · ${session.meta.rows} samples · ${formatSize(session.sizeBytes)}",
+                                        buildString {
+                                            append(formatDuration(session.durationMs))
+                                            append(" · ${session.meta.rows} samples · ${formatSize(session.sizeBytes)}")
+                                            if (session.meta.stallCount > 0) {
+                                                append(" · paused ${formatDuration(session.meta.longestStallMs)}")
+                                            }
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = stalker.muted,
+                                        color = if (session.meta.stallCount > 0) stalker.warning else stalker.muted,
                                     )
                                     Spacer(Modifier.height(4.dp))
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -220,6 +226,7 @@ fun LogsScreen(viewModel: CarStalkerViewModel) {
                                             if (session.meta.kind == "guided") stalker.accentSecondary else stalker.accent,
                                         )
                                         if (session.meta.isDemo) StatusPill("Demo", stalker.muted)
+                                        if (session.incomplete) StatusPill("Incomplete", stalker.warning)
                                     }
                                 }
                                 IconButton(onClick = { viewModel.shareLog(session) }) {

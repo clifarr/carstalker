@@ -153,6 +153,10 @@ fun LogDetailScreen(
                 append(" · ")
                 append(session.meta.rows)
                 append(" samples")
+                if (session.incomplete) append(" · interrupted, partial file")
+                if (session.meta.stallCount > 0) {
+                    append(" · sampling paused ${formatDuration(session.meta.longestStallMs)}")
+                }
                 session.meta.vin?.let { append(" · VIN ${it.takeLast(6)}") }
                 if (session.meta.isDemo) append(" · demo data")
                 append(

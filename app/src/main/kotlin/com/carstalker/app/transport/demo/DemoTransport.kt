@@ -30,6 +30,27 @@ interface DemoControllable {
 }
 
 /**
+ * The support bitmaps the simulated car answers for 0100/0120/0140/0160.
+ *
+ * PIDs 0x1C (OBD standard), 0x51 (fuel type), 0x53 (absolute evap pressure) and 0x55 (secondary
+ * O2 trim) are advertised but deliberately absent from [com.carstalker.core.obd.PidCatalog], so
+ * the parameter picker's "other supported PIDs" list is visible without a car.
+ */
+object DemoSupportedPids {
+    val bitmaps: Map<Int, IntArray> = linkedMapOf(
+        0x00 to intArrayOf(0xBF, 0xBF, 0x98, 0x13),
+        0x20 to intArrayOf(0xE0, 0x1F, 0xE0, 0x01),
+        0x40 to intArrayOf(0x7E, 0xC0, 0xA8, 0x01),
+        0x60 to intArrayOf(0xE0, 0x00, 0x00, 0x00),
+    )
+
+    /** Advertised PIDs decoded from [bitmaps], exactly as the app decodes a real car. */
+    fun decoded(): Set<Int> = bitmaps.entries.flatMapTo(mutableSetOf()) { (base, data) ->
+        com.carstalker.core.obd.PidSupport.decode(base, data)
+    }
+}
+
+/**
  * Self-contained ELM327 simulator so the app can be explored without an adapter or a car.
  * The default scenario follows smooth sine curves; guided tests can steer it to a stable
  * operating condition through [DemoControllable].
@@ -282,10 +303,7 @@ class DemoTransport : Transport, DemoControllable {
         fun trimByte(percent: Double): Int = ((percent + 100.0) * 128.0 / 100.0).roundToInt().coerceIn(0, 255)
 
         return when (pid) {
-            0x00 -> "41 00 BF BF 98 03\r\r>"
-            0x20 -> "41 20 E0 1F E0 01\r\r>"
-            0x40 -> "41 40 7E C0 28 01\r\r>"
-            0x60 -> "41 60 E0 00 00 00\r\r>"
+            in DemoSupportedPids.bitmaps -> reply(*DemoSupportedPids.bitmaps.getValue(pid))
             0x01 -> if (codesCleared) "41 01 00 0F 00 00\r\r>" else "41 01 82 0F EF 00\r\r>"
             0x03 -> reply(fuelSystem)
             0x04 -> reply((load * 255 / 100).coerceIn(0, 255))
@@ -319,6 +337,7 @@ class DemoTransport : Transport, DemoControllable {
                 val seconds = t.roundToInt()
                 reply((seconds shr 8) and 0xFF, seconds and 0xFF)
             }
+            0x1C -> reply(0x06) // OBD standard: EOBD
             0x21 -> reply(0x00, 0x0C)
             0x22 -> reply(0x13, 0xC7)
             0x23 -> reply(0x01, 0x90)
@@ -348,6 +367,7 @@ class DemoTransport : Transport, DemoControllable {
             0x4C -> reply((throttle * 255 / 100).roundToInt().coerceIn(0, 255))
             0x4D -> reply(0x00, 0x00)
             0x4E -> reply(0x00, 0x64)
+            0x51 -> reply(0x01) // Fuel type: petrol
             0x5C -> reply((oil + 40).roundToInt().coerceIn(0, 255))
             0x5E -> {
                 val raw = (fuelRate * 20).roundToInt()

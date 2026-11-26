@@ -14,14 +14,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,7 +28,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -42,22 +39,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carstalker.app.BuildConfig
 import com.carstalker.app.R
+import com.carstalker.app.data.AppLinks
 import com.carstalker.app.data.CustomPid
 import com.carstalker.app.data.ThemeMode
-import com.carstalker.app.data.dashboardParam
 import com.carstalker.app.ui.CarStalkerViewModel
 import com.carstalker.app.ui.components.ChoiceRow
+import com.carstalker.app.ui.components.CustomPidDialog
+import com.carstalker.app.ui.components.stalkerSwitchColors
 import com.carstalker.app.ui.components.SectionHeader
 import com.carstalker.app.ui.components.StalkerCard
 import com.carstalker.app.ui.theme.LocalStalkerColors
-import com.carstalker.core.guided.Aspiration
-import com.carstalker.core.guided.FuelType
-import com.carstalker.core.obd.FormulaParser
 import com.carstalker.core.obd.UnitSystem
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -271,10 +266,7 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                         Switch(
                             checked = custom.enabled,
                             onCheckedChange = { viewModel.setCustomPidEnabled(custom.pidHex, it) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color.Black,
-                                checkedTrackColor = stalker.accent,
-                            ),
+                            colors = stalkerSwitchColors(),
                         )
                         IconButton(onClick = { editingCustomPid = custom }) {
                             Icon(
@@ -300,72 +292,37 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
             }
         }
 
-        SettingsSection("Your car") {
-            val profile = settings.vehicleProfiles[settings.profileVehicleKey]
-            // Keyed on the car only: re-keying on the saved nickname would trim spaces while typing.
-            var vehicleName by remember(settings.profileVehicleKey) {
-                mutableStateOf(profile?.nickname.orEmpty())
-            }
-            OutlinedTextField(
-                value = vehicleName,
-                onValueChange = {
-                    vehicleName = it.take(32)
-                    viewModel.setVehicleNickname(it)
+        SettingsSection("Recording in the background") {
+            val batteryExempt by viewModel.batteryOptimizationExempt.collectAsStateWithLifecycle()
+            Text(
+                if (batteryExempt) {
+                    "Battery optimization is off for CarStalker, so Android will not freeze the " +
+                        "poll loop while a recording runs in the background."
+                } else {
+                    "Battery optimization is on. Android can freeze CarStalker while it records " +
+                        "in the background, which leaves gaps in the CSV with no samples."
                 },
-                label = { Text("Vehicle name (optional)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                "Shown on the dashboard when the car does not report a VIN. Stored against this car's ECU fingerprint, not another vehicle.",
                 style = MaterialTheme.typography.bodySmall,
-                color = stalker.muted,
+                color = if (batteryExempt) stalker.muted else stalker.warning,
             )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Fuel and aspiration describe the car you connect to. Guided tests use them to choose the correct interpretation; they are never inferred from a single live value.",
-                style = MaterialTheme.typography.bodySmall,
-                color = stalker.muted,
-            )
-            Text("Fuel", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
-            ChoiceRow(
-                options = listOf(
-                    FuelType.UNKNOWN to "Not set",
-                    FuelType.PETROL to "Petrol",
-                    FuelType.DIESEL to "Diesel",
-                ),
-                selected = settings.fuelType,
-                onSelect = viewModel::setFuelType,
-            )
-            Text("Aspiration", style = MaterialTheme.typography.labelMedium, color = stalker.accent)
-            ChoiceRow(
-                options = listOf(
-                    Aspiration.UNKNOWN to "Not set",
-                    Aspiration.NATURALLY_ASPIRATED to "Naturally aspirated",
-                    Aspiration.FORCED_INDUCTION to "Turbo / supercharged",
-                ),
-                selected = settings.aspiration,
-                onSelect = viewModel::setAspiration,
-            )
-            Spacer(Modifier.height(10.dp))
-            SwitchRow(
-                title = "Interpolate pedal readings",
-                description = "Rescale the channel chosen by the pedal finder so a released pedal reads 0 % and a fully pressed pedal reads 100 %.",
-                checked = settings.pedalCalibrationEnabled,
-                onCheckedChange = viewModel::setPedalCalibrationEnabled,
-            )
-            val calibrated = settings.pedalCalibrations
-                .filter { it.vehicleKey == settings.profileVehicleKey }
-            if (calibrated.isNotEmpty()) {
+            if (viewModel.xiaomiDevice) {
                 Text(
-                    "Calibrated channels: " + calibrated.joinToString { calibration ->
-                        val name = dashboardParam(calibration.pidId)?.shortName
-                            ?: calibration.pidId.toString()
-                        "$name (${calibration.releasedValue.toInt()}–${calibration.pressedValue.toInt()} %)"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
+                    "Xiaomi and HyperOS need two more settings: allow Autostart for CarStalker, " +
+                        "and set Battery saver to No restrictions. Locking the app in the recent " +
+                        "apps list also helps.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = stalker.muted,
                 )
+            }
+            OutlinedButton(
+                onClick = viewModel::openAppBatterySettings,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Open battery settings") }
+            if (viewModel.xiaomiDevice) {
+                OutlinedButton(
+                    onClick = viewModel::openAutostartSettings,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open autostart settings") }
             }
         }
 
@@ -402,15 +359,15 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Export connection diagnostics") }
             OutlinedButton(
-                onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker") },
+                onClick = { viewModel.openExternal(AppLinks.SOURCE) },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Source code") }
             OutlinedButton(
-                onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker/issues/new") },
+                onClick = { viewModel.openExternal(AppLinks.ISSUES) },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Report an issue") }
             OutlinedButton(
-                onClick = { viewModel.openExternal("https://github.com/clifarr/carstalker/releases") },
+                onClick = { viewModel.openExternal(AppLinks.RELEASES) },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Releases") }
             Text(
@@ -444,12 +401,15 @@ fun SettingsScreen(viewModel: CarStalkerViewModel) {
     }
 
     if (showPrivacy) {
-        PrivacyPolicyDialog(onDismiss = { showPrivacy = false })
+        PrivacyPolicyDialog(
+            onDismiss = { showPrivacy = false },
+            onOpenOnline = { viewModel.openExternal(AppLinks.PRIVACY_POLICY) },
+        )
     }
 }
 
 @Composable
-private fun PrivacyPolicyDialog(onDismiss: () -> Unit) {
+private fun PrivacyPolicyDialog(onDismiss: () -> Unit, onOpenOnline: () -> Unit) {
     val context = LocalContext.current
     val policy = remember(context) {
         context.resources.openRawResource(R.raw.privacy_policy)
@@ -471,6 +431,9 @@ private fun PrivacyPolicyDialog(onDismiss: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        },
+        dismissButton = {
+            TextButton(onClick = onOpenOnline) { Text("Open online") }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("Close") }
@@ -513,10 +476,7 @@ private fun SwitchRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.Black,
-                checkedTrackColor = stalker.accent,
-            ),
+            colors = stalkerSwitchColors(),
         )
     }
 }
@@ -529,173 +489,3 @@ private fun AboutRow(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.bodyMedium, color = stalker.muted)
     }
 }
-
-@Composable
-private fun CustomPidDialog(
-    initial: CustomPid?,
-    onDismiss: () -> Unit,
-    onSave: (CustomPid) -> Unit,
-) {
-    val stalker = LocalStalkerColors.current
-    var name by remember { mutableStateOf(initial?.name.orEmpty()) }
-    var shortName by remember { mutableStateOf(initial?.shortName.orEmpty()) }
-    var pidHex by remember { mutableStateOf(initial?.pidHex?.uppercase(Locale.US).orEmpty()) }
-    var unit by remember { mutableStateOf(initial?.unit.orEmpty()) }
-    var min by remember { mutableStateOf(initial?.min?.toString() ?: "0") }
-    var max by remember { mutableStateOf(initial?.max?.toString() ?: "100") }
-    var decimals by remember { mutableStateOf(initial?.decimals?.toString() ?: "1") }
-    var formula by remember { mutableStateOf(initial?.formula.orEmpty()) }
-
-    val pidValue = pidHex.toIntOrNull(16)
-    val pidValid = pidValue != null && pidValue in 1..255
-    val formulaValid = formula.isNotBlank() && FormulaParser.isValid(formula)
-    val minValue = min.toDoubleOrNull()
-    val maxValue = max.toDoubleOrNull()
-    val rangeValid = minValue != null && maxValue != null && maxValue > minValue
-    val decimalsValid = (decimals.toIntOrNull() ?: -1) in 0..3
-    val unitValid = unit.length <= 12
-    val collision = pidValue != null && pidValue in 1..255 &&
-        com.carstalker.core.obd.PidCatalog.find(pidValue) != null &&
-        initial?.pidHex?.toIntOrNull(16) != pidValue
-    val canSave = name.isNotBlank() && pidValid && formulaValid && rangeValid && decimalsValid && unitValid && !collision
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "New custom PID" else "Edit custom PID") },
-        text = {
-            Column(
-                Modifier
-                    .heightIn(max = 460.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Text(
-                    "Mode 01 custom PID only. A, B, C and D are the first four response bytes. Extended or header-specific requests are not supported.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = stalker.muted,
-                )
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it.take(40) },
-                    label = { Text("Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = shortName,
-                    onValueChange = { shortName = it.take(12) },
-                    label = { Text("Short name (tile)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = pidHex,
-                    onValueChange = { input ->
-                        pidHex = input.uppercase(Locale.US).filter { it in '0'..'9' || it in 'A'..'F' }.take(2)
-                    },
-                    label = { Text("PID (hex)") },
-                    singleLine = true,
-                    isError = (pidHex.isNotEmpty() && !pidValid) || collision,
-                    supportingText = {
-                        when {
-                            pidHex.isNotEmpty() && !pidValid -> Text("Enter 01–FF")
-                            collision -> Text("This PID is already defined by a standard parameter")
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = unit,
-                    onValueChange = { unit = it.take(12) },
-                    label = { Text("Unit") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = formula,
-                    onValueChange = { formula = it.take(80) },
-                    label = { Text("Formula") },
-                    singleLine = true,
-                    isError = formula.isNotEmpty() && !formulaValid,
-                    supportingText = {
-                        Text(
-                            if (formula.isNotEmpty() && !formulaValid) {
-                                "Use A, B, C, D, numbers, + - * / % and parentheses. Division by zero or a non-finite result is rejected."
-                            } else {
-                                "Example: (A*256+B)/4"
-                            },
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = min,
-                        onValueChange = { min = it },
-                        label = { Text("Min") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        isError = min.isNotBlank() && minValue == null,
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedTextField(
-                        value = max,
-                        onValueChange = { max = it },
-                        label = { Text("Max") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        isError = max.isNotBlank() && (maxValue == null || !rangeValid),
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedTextField(
-                        value = decimals,
-                        onValueChange = { decimals = it.filter(Char::isDigit).take(1) },
-                        label = { Text("Dec") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        isError = decimals.isNotBlank() && !decimalsValid,
-                        modifier = Modifier.width(74.dp),
-                    )
-                }
-                if (!rangeValid && min.isNotBlank() && max.isNotBlank()) {
-                    Text("Max must be greater than min.", style = MaterialTheme.typography.labelSmall, color = stalker.danger)
-                }
-                if (!decimalsValid && decimals.isNotBlank()) {
-                    Text("Decimals must be 0–3.", style = MaterialTheme.typography.labelSmall, color = stalker.danger)
-                }
-                if (!unitValid) {
-                    Text("Unit must be 12 characters or fewer.", style = MaterialTheme.typography.labelSmall, color = stalker.danger)
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    val id = pidValue ?: return@Button
-                    onSave(
-                        CustomPid(
-                            pidHex = pidHex.uppercase(Locale.US).padStart(2, '0'),
-                            name = name.trim(),
-                            shortName = shortName.trim().ifBlank { name.trim().take(10) },
-                            unit = unit.trim(),
-                            min = min.toDoubleOrNull() ?: 0.0,
-                            max = max.toDoubleOrNull() ?: 100.0,
-                            decimals = decimals.toIntOrNull()?.coerceIn(0, 3) ?: 1,
-                            formula = formula.trim(),
-                            enabled = initial?.enabled ?: true,
-                        ),
-                    )
-                },
-                enabled = canSave,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = stalker.accent,
-                    contentColor = Color.Black,
-                ),
-            ) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
-}
-

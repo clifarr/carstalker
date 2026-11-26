@@ -36,6 +36,20 @@ data class PedalChannelResult(
     val throttlePlate: List<PedalChannelReading>,
     val recommended: List<Int>,
     val summary: String,
+) {
+    /** Best accelerator channel, if one followed the pedal. */
+    val recommendedPedal: Int? get() = accelerator.firstOrNull()?.pidId
+
+    /** Best throttle-plate channel, if one followed the pedal. */
+    val recommendedThrottle: Int? get() = throttlePlate.firstOrNull()?.pidId
+}
+
+/** The dashboard change produced by applying one or more finder recommendations. */
+data class PedalDashboardUpdate(
+    val pids: List<Int>,
+    val added: List<Int>,
+    val replaced: List<Int>,
+    val skipped: List<Int>,
 )
 
 /**
@@ -78,6 +92,39 @@ object PedalChannelCheck {
         }
     }
 
+    /**
+     * Applies the recommended pedal and/or throttle channels in one pass. A static throttle
+     * plate already on the dashboard is replaced rather than duplicated; channels that do not
+     * fit in [max] are reported in [PedalDashboardUpdate.skipped].
+     */
+    fun applyRecommendations(
+        base: List<Int>,
+        pids: List<Int>,
+        result: PedalChannelResult?,
+        max: Int,
+    ): PedalDashboardUpdate {
+        var updated = base
+        val added = mutableListOf<Int>()
+        val replaced = mutableListOf<Int>()
+        val skipped = mutableListOf<Int>()
+        for (pidId in pids.distinct()) {
+            if (pidId in updated) {
+                skipped += pidId
+                continue
+            }
+            val replacePid = staticThrottlePlateOn(updated, result)
+            val next = applyToDashboard(updated, pidId, replacePid, max)
+            if (next == null) {
+                skipped += pidId
+                continue
+            }
+            if (replacePid != null) replaced += replacePid
+            updated = next
+            added += pidId
+        }
+        return PedalDashboardUpdate(updated, added, replaced, skipped)
+    }
+
     fun analyze(capture: CaptureData): PedalChannelResult {
         val releaseCutoff = capture.startedAt +
             (capture.durationMs * RELEASE_FRACTION).toLong()
@@ -106,18 +153,17 @@ object PedalChannelCheck {
         val throttlePlate = readings
             .filter { it.pidId in THROTTLE_PLATE_PIDS && it.moved }
             .sortedByDescending { it.range }
-        val recommended = when {
-            accelerator.isNotEmpty() -> accelerator.map { it.pidId }
-            throttlePlate.isNotEmpty() -> listOf(throttlePlate.first().pidId)
-            else -> emptyList()
-        }
+        val recommended = buildList {
+            accelerator.forEach { add(it.pidId) }
+            throttlePlate.firstOrNull()?.let { add(it.pidId) }
+        }.distinct()
         val acceleratorNames = accelerator.joinToString { it.shortName }
         val throttleNames = throttlePlate.joinToString { it.shortName }
         val summary = when {
             accelerator.isNotEmpty() && throttlePlate.isEmpty() ->
                 "The pedal is reported on $acceleratorNames. The throttle-plate channels did not follow the pedal."
-            accelerator.isNotEmpty() ->
-                "The pedal is reported on $acceleratorNames. $throttleNames also moved."
+            accelerator.isNotEmpty() && throttlePlate.isNotEmpty() ->
+                "The pedal is reported on $acceleratorNames. The throttle plate is reported on $throttleNames; both followed the pedal."
             throttlePlate.isNotEmpty() ->
                 "The throttle plate is reported on $throttleNames, but no pedal channel moved. Use that channel for this car."
             else ->

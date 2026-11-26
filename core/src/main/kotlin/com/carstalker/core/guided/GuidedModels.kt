@@ -348,6 +348,10 @@ data class GuidedSnapshot(
     val markerCount: Int = 0,
     val invalidatedMarkerCount: Int = 0,
     val message: String = "",
+    val safetyStatus: SafetyStatus = SafetyStatus.UNAVAILABLE,
+    val safetyMessage: String? = null,
+    /** Safety signals the vehicle does not report; their limits cannot be verified. */
+    val unverifiedSafetySignals: List<String> = emptyList(),
 ) {
     val stageNumber: Int get() = (stageIndex + 1).coerceAtMost(stageCount.coerceAtLeast(1))
     val isActive: Boolean
@@ -361,9 +365,30 @@ data class GuidedSnapshot(
 enum class StageOutcome(val label: String) {
     VALID("Valid"),
     NOT_EXERCISED("Not exercised"),
+    PARTIAL("Partial"),
     INSUFFICIENT_QUALITY("Insufficient quality"),
     SKIPPED("Skipped"),
     INTERRUPTED("Interrupted"),
+}
+
+/** Whether a safety gate could actually be evaluated. */
+enum class SafetyStatus {
+    /** Every required safety signal was fresh and within its limit. */
+    OK,
+
+    /** A required safety signal was fresh and outside its limit. */
+    UNSAFE,
+
+    /** A required safety signal was missing, unsupported or stale, so safety cannot be verified. */
+    UNAVAILABLE,
+}
+
+data class SafetyCheck(
+    val status: SafetyStatus = SafetyStatus.UNAVAILABLE,
+    val reason: String? = null,
+    val signal: Int? = null,
+) {
+    val isSafe: Boolean get() = status == SafetyStatus.OK
 }
 
 enum class SymptomMarkerState { VALID, INVALIDATED }
@@ -548,6 +573,8 @@ data class AnalysisInput(
     val skippedStages: List<String> = emptyList(),
     val adapterVoltageUsed: Boolean = false,
     val safetyStopReason: String? = null,
+    /** Safety limits that could not be checked because the vehicle does not report the signal. */
+    val unverifiedSafetySignals: List<String> = emptyList(),
     val cancelled: Boolean = false,
     /** The adapter stopped answering during the test; the captured stages are still usable. */
     val connectionLost: Boolean = false,

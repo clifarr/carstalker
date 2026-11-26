@@ -2,8 +2,12 @@
 <resources>
     <string name="app_name">CarStalker</string>
     <string name="recording_notification_title">Recording drive data</string>
-    <string name="recording_notification_text">CarStalker keeps sampling while the app is in the background.</string>
+    <string name="recording_notification_waiting">Waiting for the first sample…</string>
+    <string name="recording_notification_progress">%1$d samples · last %2$s</string>
     <string name="recording_notification_stop">Stop</string>
     <string name="recording_channel_name">Recording</string>
     <string name="recording_channel_description">Shown while a drive recording is running.</string>
+    <string name="recording_alerts_channel_name">Recording problems</string>
+    <string name="recording_alerts_channel_description">Shown when background recording stops or cannot be protected.</string>
+    <string name="recording_failed_title">Background recording stopped</string>
 </resources>

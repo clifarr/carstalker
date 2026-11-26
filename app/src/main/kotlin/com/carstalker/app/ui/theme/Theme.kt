@@ -1,6 +1,13 @@
 package com.carstalker.app.ui.theme
 
 import android.app.Activity
+import android.app.UiModeManager
+import android.content.Context
+import android.content.ContextWrapper
+import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -8,6 +15,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
@@ -26,6 +34,8 @@ data class StalkerColors(
     val grid: Color,
     val muted: Color,
 )
+
+val LocalIsDarkTheme = staticCompositionLocalOf { true }
 
 val LocalStalkerColors = staticCompositionLocalOf {
     StalkerColors(
@@ -112,12 +122,41 @@ fun CarStalkerTheme(
         ThemeMode.LIGHT -> false
     }
     val view = LocalView.current
+    // Keep the Android theme (including Material's bottom-sheet dialog theme) aligned with the
+    // app's Compose theme. Without this, a forced dark app on a light system keeps light system
+    // bars and dialog surfaces.
+    LaunchedEffect(dark) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            view.context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(
+                if (dark) UiModeManager.MODE_NIGHT_YES else UiModeManager.MODE_NIGHT_NO,
+            )
+        }
+    }
     if (!view.isInEditMode) {
         SideEffect {
-            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            val activity = view.context.findActivity()
+            val window = activity?.window ?: return@SideEffect
             WindowCompat.getInsetsController(window, view).apply {
                 isAppearanceLightStatusBars = !dark
                 isAppearanceLightNavigationBars = !dark
+            }
+            // The system bar scrim is chosen by enableEdgeToEdge from the *system* dark mode.
+            // Re-apply it from the app's theme so a forced dark theme does not leave a light
+            // navigation-bar strip under bottom sheets.
+            if (activity is ComponentActivity) {
+                val transparent = android.graphics.Color.TRANSPARENT
+                activity.enableEdgeToEdge(
+                    statusBarStyle = if (dark) {
+                        SystemBarStyle.dark(transparent)
+                    } else {
+                        SystemBarStyle.light(transparent, transparent)
+                    },
+                    navigationBarStyle = if (dark) {
+                        SystemBarStyle.dark(transparent)
+                    } else {
+                        SystemBarStyle.light(transparent, transparent)
+                    },
+                )
             }
         }
     }
@@ -147,7 +186,10 @@ fun CarStalkerTheme(
         )
     }
 
-    CompositionLocalProvider(LocalStalkerColors provides stalker) {
+    CompositionLocalProvider(
+        LocalStalkerColors provides stalker,
+        LocalIsDarkTheme provides dark,
+    ) {
         MaterialTheme(
             colorScheme = colors,
             typography = CarStalkerTypography,
@@ -155,4 +197,11 @@ fun CarStalkerTheme(
             content = content,
         )
     }
+}
+
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }
