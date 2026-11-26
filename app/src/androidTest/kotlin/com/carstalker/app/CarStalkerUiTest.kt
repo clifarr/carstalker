@@ -29,6 +29,14 @@ class CarStalkerUiTest {
     fun launchApp() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         device = UiDevice.getInstance(instrumentation)
+        // A headless CI emulator can start with the display off, which leaves the activity
+        // running but its window invisible to UiAutomator.
+        runCatching { device.wakeUp() }
+        runCatching { device.pressMenu() }
+        runCatching {
+            instrumentation.uiAutomation.executeShellCommand("svc power stayon true").close()
+        }
+        device.waitForIdle(1_000)
         val context = instrumentation.targetContext
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
@@ -60,10 +68,11 @@ class CarStalkerUiTest {
                 .putExtra("route", "connect")
                 .putExtra("action", "disconnect"),
         )
-        assertTrue("Connect screen did not appear", waitFor("CarStalker", 15_000))
+        // A cold start on a software-rendered CI emulator can take far longer than a phone.
+        assertTrue("Connect screen did not appear", waitFor("CarStalker", 60_000))
         assertTrue(
             "A previous adapter session was not disconnected",
-            waitFor("Connect an OBD-II adapter", 10_000),
+            waitFor("Connect an OBD-II adapter", 30_000),
         )
     }
 
@@ -129,11 +138,11 @@ class CarStalkerUiTest {
 
         // Demo connection
         click("Demo")
-        assertTrue("Demo pane did not appear", waitFor("Start demo"))
+        assertTrue("Demo pane did not appear", waitFor("Start demo", 20_000))
         screenshot("02-demo")
         click("Start demo")
         openDashboardAndResetScroll()
-        assertTrue("Live status missing", waitFor("Live", 15_000))
+        assertTrue("Live status missing", waitFor("Live", 45_000))
         Thread.sleep(1_000)
         screenshot("03-dashboard")
 
@@ -323,12 +332,12 @@ class CarStalkerUiTest {
      * the top so header actions and the status pill are reachable.
      */
     private fun openDashboardAndResetScroll() {
-        if (!waitFor("Dashboard", 20_000)) {
+        if (!waitFor("Dashboard", 45_000)) {
             // The demo pane may still have been animating when Start demo was tapped.
             device.wait(Until.findObject(By.text("Start demo")), 2_000)?.click()
             device.waitForIdle(1_000)
         }
-        assertTrue("Dashboard did not appear", waitFor("Dashboard", 20_000))
+        assertTrue("Dashboard did not appear", waitFor("Dashboard", 45_000))
         Thread.sleep(1_500)
         scrollToBeginning()
     }
